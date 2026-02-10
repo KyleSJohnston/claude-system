@@ -11,6 +11,7 @@
 # Session tracking
 .session-decisions
 .claude/
+.credentials.json
 
 # Large runtime directories
 projects/
