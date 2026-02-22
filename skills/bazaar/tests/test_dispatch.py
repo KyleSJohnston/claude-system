@@ -245,5 +245,106 @@ class TestLoadProvider(unittest.TestCase):
                 self.fail(f"Failed to import {provider}: {e}")
 
 
+class TestKeychainDirResolution(unittest.TestCase):
+    """Verify KEYCHAIN_DIR resolves to a path rooted at the ~/.claude project.
+
+    DEC-BAZAAR-010: KEYCHAIN_DIR is computed by walking up from __file__
+    to the first directory containing CLAUDE.md (the project anchor), then
+    appending scripts/lib. This is robust across worktrees and file moves,
+    unlike the fragile parents[N] approach it replaced.
+    """
+
+    def test_keychain_dir_contains_scripts_lib(self):
+        """KEYCHAIN_DIR path should end in 'scripts/lib'."""
+        parts = bd.KEYCHAIN_DIR.parts
+        self.assertGreaterEqual(len(parts), 2,
+                                "KEYCHAIN_DIR should have at least 2 path components")
+        self.assertEqual(parts[-1], "lib",
+                         f"KEYCHAIN_DIR should end in 'lib', got: {bd.KEYCHAIN_DIR}")
+        self.assertEqual(parts[-2], "scripts",
+                         f"KEYCHAIN_DIR parent should be 'scripts', got: {bd.KEYCHAIN_DIR}")
+
+    def test_keychain_dir_rooted_at_claude_root(self):
+        """KEYCHAIN_DIR parent (scripts/) should be a sibling of CLAUDE.md."""
+        scripts_dir = bd.KEYCHAIN_DIR.parent   # .../scripts
+        claude_root = scripts_dir.parent        # .../.claude
+        claude_md = claude_root / "CLAUDE.md"
+        self.assertTrue(
+            claude_md.exists(),
+            f"Expected CLAUDE.md at {claude_md} — KEYCHAIN_DIR may be miscalculated. "
+            f"KEYCHAIN_DIR={bd.KEYCHAIN_DIR}"
+        )
+
+    def test_find_claude_root_returns_directory_with_claude_md(self):
+        """_find_claude_root() should return a directory containing CLAUDE.md."""
+        root = bd._find_claude_root()
+        self.assertTrue(
+            (root / "CLAUDE.md").exists(),
+            f"_find_claude_root() returned {root!r} which has no CLAUDE.md"
+        )
+
+
+class TestStripMarkdownFencing(unittest.TestCase):
+    """Verify _strip_markdown_fencing() handles all fence variants correctly.
+
+    DEC-BAZAAR-011: LLMs wrap JSON in markdown fences despite being told
+    not to. This function strips fences before json.loads() so the parser
+    receives clean JSON.
+    """
+
+    def test_plain_json_unchanged(self):
+        """Plain JSON with no fencing should be returned unchanged."""
+        payload = '{"key": "value", "num": 42}'
+        self.assertEqual(bd._strip_markdown_fencing(payload), payload)
+
+    def test_json_fence_with_language_tag(self):
+        """```json ... ``` fencing should be stripped."""
+        fenced = '```json\n{"key": "value"}\n```'
+        result = bd._strip_markdown_fencing(fenced)
+        self.assertEqual(result, '{"key": "value"}')
+
+    def test_json_fence_without_language_tag(self):
+        """``` ... ``` fencing (no language tag) should be stripped."""
+        fenced = '```\n{"key": "value"}\n```'
+        result = bd._strip_markdown_fencing(fenced)
+        self.assertEqual(result, '{"key": "value"}')
+
+    def test_whitespace_around_fences_stripped(self):
+        """Leading/trailing whitespace around fences should be stripped."""
+        fenced = '  \n```json\n{"key": "value"}\n```\n  '
+        result = bd._strip_markdown_fencing(fenced)
+        self.assertEqual(result, '{"key": "value"}')
+
+    def test_stripped_output_is_valid_json(self):
+        """Result after stripping should be parseable as JSON."""
+        fenced = '```json\n{"ideas": ["a", "b", "c"], "score": 9}\n```'
+        stripped = bd._strip_markdown_fencing(fenced)
+        parsed = json.loads(stripped)
+        self.assertEqual(parsed["score"], 9)
+        self.assertEqual(len(parsed["ideas"]), 3)
+
+    def test_run_single_dispatch_parses_fenced_fixture(self):
+        """_run_single_dispatch() should parse JSON even when fixture is fenced."""
+        # Build a fenced JSON fixture on the fly
+        inner = json.dumps({"ideator": "test", "ideas": ["x"]})
+        fenced_content = f"```json\n{inner}\n```"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Write fenced content as the fixture file
+            fixture_path = Path(tmpdir) / "fenced_fixture.json"
+            fixture_path.write_text(fenced_content)
+
+            dispatch = make_dispatch("fence-01", fixture=str(fixture_path))
+            result = bd._run_single_dispatch(dispatch, mock=True)
+
+        self.assertTrue(result["success"])
+        # text should be the raw fenced content
+        self.assertIn("```", result["text"])
+        # parsed should have been successfully extracted despite fencing
+        self.assertIsNotNone(result["parsed"],
+                             "parsed should not be None for fenced JSON output")
+        self.assertIn("ideator", result["parsed"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,28 @@ as Claude Task agents by SKILL.md — they cannot run inside this script.
 Per-dispatch error isolation: one provider failure doesn't block others.
 Mock mode (--mock) reads from fixtures for testing without API calls.
 
+@decision DEC-BAZAAR-010
+@title KEYCHAIN_DIR resolved by walking up to CLAUDE.md anchor, not parents[N]
+@status accepted
+@rationale parents[N] is fragile — it breaks when the script is accessed from
+a worktree (adds extra directory levels) or if the file is moved. Walking up
+from __file__ looking for CLAUDE.md is robust: CLAUDE.md is the canonical
+anchor for the ~/.claude project root and is always present. If the anchor
+is not found (e.g., in a test environment where the script is isolated),
+the walk terminates at the filesystem root and KEYCHAIN_DIR is set to a
+non-existent path, which causes the sys.path.insert guard to skip gracefully.
+
+@decision DEC-BAZAAR-011
+@title Markdown fence stripping before JSON parsing of LLM output
+@status accepted
+@rationale claude-opus-4-6 wraps JSON responses in markdown fences
+(```json ... ```) even when instructed not to. The archetype prompts say
+"Return ONLY a valid JSON object (no preamble, no markdown fencing)" but the
+model ignores this intermittently. Stripping fences before json.loads() makes
+the parser resilient to this behavior without changing the prompt contract.
+The strip is applied only to the JSON parse attempt, not to the raw text
+field, so the unmodified LLM output is still available to callers.
+
 Usage:
     bazaar_dispatch.py <dispatches.json> <output_dir/> [--mock] [--timeout N]
 
@@ -65,7 +87,29 @@ from typing import Any, Dict, List, Optional
 
 SCRIPT_DIR = Path(__file__).parent
 LIB_DIR = SCRIPT_DIR / "lib"
-KEYCHAIN_DIR = Path(__file__).parents[4] / "scripts" / "lib"  # ~/.claude/scripts/lib
+
+
+def _find_claude_root() -> Path:
+    """Walk up from this file's location to find the ~/.claude project root.
+
+    Uses CLAUDE.md as the anchor — it is always present at the root and
+    uniquely identifies the project. This is robust across worktrees and
+    any file reorganization (unlike parents[N] which breaks if the file
+    is moved or the tree depth changes).
+
+    Returns the root directory containing CLAUDE.md, or the filesystem
+    root if the anchor is not found (e.g., isolated test environments).
+    See @decision DEC-BAZAAR-010.
+    """
+    _candidate = Path(__file__).resolve().parent
+    while _candidate != _candidate.parent:
+        if (_candidate / "CLAUDE.md").exists():
+            return _candidate
+        _candidate = _candidate.parent
+    return _candidate  # filesystem root — keychain unavailable
+
+
+KEYCHAIN_DIR = _find_claude_root() / "scripts" / "lib"  # ~/.claude/scripts/lib
 
 # Add SCRIPT_DIR so 'lib' can be imported as a package (for relative imports within lib/)
 # NOTE: Do NOT add LIB_DIR to sys.path — it contains http.py which shadows Python's
@@ -73,6 +117,33 @@ KEYCHAIN_DIR = Path(__file__).parents[4] / "scripts" / "lib"  # ~/.claude/script
 sys.path.insert(0, str(SCRIPT_DIR))
 if KEYCHAIN_DIR.exists():
     sys.path.insert(0, str(KEYCHAIN_DIR))
+
+
+# ── Markdown fence stripping ─────────────────────────────────────────────────
+
+def _strip_markdown_fencing(text: str) -> str:
+    """Strip markdown code fences from LLM output before JSON parsing.
+
+    LLMs (including claude-opus-4-6) sometimes wrap JSON responses in
+    markdown fences (```json ... ```) even when instructed not to.
+    This function strips leading and trailing fences so json.loads() can
+    parse the content cleanly.
+
+    The raw text field in the dispatch result is NOT stripped — only the
+    JSON parse attempt uses this function, preserving the unmodified LLM
+    output for callers. See @decision DEC-BAZAAR-011.
+
+    Handles:
+        - Plain JSON (no fencing) → returned unchanged
+        - ```json\\n{...}\\n``` → stripped to {...}
+        - ```\\n{...}\\n``` → stripped to {...} (no language tag)
+        - Leading/trailing whitespace around fences → stripped
+    """
+    import re
+    text = text.strip()
+    text = re.sub(r'^\s*```(?:json)?\s*\n?', '', text)
+    text = re.sub(r'\n?\s*```\s*$', '', text)
+    return text.strip()
 
 
 # ── Provider module loader ────────────────────────────────────────────────────
@@ -168,9 +239,11 @@ def _run_single_dispatch(
         result["model_used"] = model_used
         result["success"] = True
 
-        # Attempt JSON parse
+        # Attempt JSON parse — strip markdown fences first since LLMs sometimes
+        # wrap JSON in ```json ... ``` blocks despite being told not to.
+        # See @decision DEC-BAZAAR-011 and _strip_markdown_fencing().
         try:
-            result["parsed"] = json.loads(text)
+            result["parsed"] = json.loads(_strip_markdown_fencing(text))
         except json.JSONDecodeError:
             # Not all outputs are JSON — that's OK
             result["parsed"] = None
