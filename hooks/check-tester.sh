@@ -113,7 +113,7 @@ if [[ "$RESPONSE_LEN" -gt 0 ]]; then
     if [[ "$AV_SIGNAL" -gt 0 ]]; then
         CONF_CHECK=$(echo "$RESPONSE_TEXT" | grep -ci '\*\*High\*\*' 2>/dev/null || echo "0")
         PARTIAL_CHECK=$(echo "$RESPONSE_TEXT" | grep -ci 'Partially verified' 2>/dev/null || echo "0")
-        NOT_TESTED_CHECK=$(echo "$RESPONSE_TEXT" | grep -ci 'Not tested' 2>/dev/null || echo "0")
+        NOT_TESTED_CHECK=$(echo "$RESPONSE_TEXT" | grep -ciE '(:\s*Not tested|\|\s*Not tested)' 2>/dev/null || echo "0")
         echo "check-tester: secondary validation: High=$CONF_CHECK Partial=$PARTIAL_CHECK NotTested=$NOT_TESTED_CHECK" >&2
     fi
 else
@@ -218,7 +218,7 @@ if [[ "$PROOF_STATUS" == "pending" || "$PROOF_STATUS" == "needs-verification" ]]
     # Environmental gaps (browser viewport, screen reader, physical device, etc.)
     # are whitelisted — they cannot be tested in a headless CLI context and do not
     # indicate incomplete verification of the feature under test.
-    NOT_TESTED_LINES=$(echo "$RESPONSE_TEXT" | grep -i 'Not tested' || true)
+    NOT_TESTED_LINES=$(echo "$RESPONSE_TEXT" | grep -iE '(:\s*Not tested|\|\s*Not tested)' || true)
     if [[ -n "$NOT_TESTED_LINES" ]]; then
         ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
         NON_ENV_LINES=$(echo "$NOT_TESTED_LINES" | grep -iv "$ENV_PATTERN" || true)

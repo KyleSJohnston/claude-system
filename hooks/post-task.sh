@@ -168,7 +168,7 @@ fi
 # Must NOT have non-environmental "Not tested" entries
 # Environmental patterns are whitelisted — they cannot be tested in a headless CLI context
 ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
-NOT_TESTED_LINES=$(echo "$SUMMARY_TEXT" | grep -i 'Not tested' || true)
+NOT_TESTED_LINES=$(echo "$SUMMARY_TEXT" | grep -iE '(:\s*Not tested|\|\s*Not tested)' || true)
 if [[ -n "$NOT_TESTED_LINES" ]]; then
     NON_ENV_LINES=$(echo "$NOT_TESTED_LINES" | grep -iv "$ENV_PATTERN" || true)
     if [[ -n "$NON_ENV_LINES" ]]; then

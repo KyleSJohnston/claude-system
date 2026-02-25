@@ -708,6 +708,51 @@ fi
 rm -rf "$REPO" "$TRACE"
 
 # ===========================================================================
+# Test 16: "Not tested" in area name descriptions is not a false positive
+# Contract: "Not tested" appearing in coverage table area/name columns (not the
+#   status column) must NOT trigger the non-environmental rejection.  A summary
+#   where every status cell says "Fully verified" must auto-verify even when area
+#   names contain the phrase "Not tested → blocked" or similar descriptions.
+# ===========================================================================
+
+run_test "T16: 'Not tested' in area name (not status) + AUTOVERIFY: CLEAN + High → verified"
+REPO=$(make_temp_repo)
+TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-pta-trace-XXXXXX")
+echo "pending|$(date +%s)" > "$REPO/.claude/.proof-status"
+
+SUMMARY=$(cat <<'SUMMARY_EOF'
+## Verification Assessment
+
+AUTOVERIFY: CLEAN
+
+**Confidence:** **High**
+
+### Coverage
+| Area | Status | Notes |
+|------|--------|-------|
+| AUTOVERIFY: CLEAN + High confidence → auto-verify | Fully verified | T1 |
+| Non-environmental Not tested → blocked | Fully verified | T4 |
+| Environmental Not tested (browser) → allowed | Fully verified | T5 |
+| Bash syntax validity | Fully verified | Syntax tests |
+SUMMARY_EOF
+)
+
+make_tester_trace "$TRACE" "$REPO" "$SUMMARY" > /dev/null
+run_post_task "tester" "$REPO" "$TRACE"
+
+if [[ -f "$REPO/.claude/.proof-status" ]]; then
+    STATUS=$(cut -d'|' -f1 "$REPO/.claude/.proof-status")
+    if [[ "$STATUS" == "verified" ]]; then
+        pass_test
+    else
+        fail_test "Expected 'verified' ('Not tested' in area names should not block auto-verify), got '$STATUS'"
+    fi
+else
+    fail_test ".proof-status was deleted"
+fi
+rm -rf "$REPO" "$TRACE"
+
+# ===========================================================================
 # Syntax check
 # ===========================================================================
 
