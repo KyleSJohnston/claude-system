@@ -151,7 +151,35 @@ else
     log_info "POST-TASK" "no active tester trace found — cannot read summary.md"
 fi
 
-# No summary available — cannot auto-verify, exit gracefully
+# Fallback: summary.md may be in a DIFFERENT trace than the one detected.
+# task-track.sh creates trace #1 (orchestrator session), subagent-start.sh creates
+# trace #2 (subagent session). The tester writes summary.md to trace #2.
+# Scan recent tester traces for the one with actual summary content.
+#
+# @decision DEC-AV-DUAL-001
+# @title Project-scoped summary.md scan for dual-trace scenarios
+# @status accepted
+# @rationale Each tester dispatch creates two traces with different session_ids.
+#   The marker and session-based fallback find trace #1 (no summary). The actual
+#   summary is in trace #2. Scanning recent traces for summary.md + project match
+#   is safe (project-scoped, 5 trace limit) and handles all detection failures.
+if [[ -z "$SUMMARY_TEXT" ]]; then
+    for _dir in $(ls -1d "${TRACE_STORE}/tester-"* 2>/dev/null | sort -r | head -5); do
+        _smf="${_dir}/summary.md"
+        [[ -s "$_smf" ]] || continue
+        _sz=$(wc -c < "$_smf" 2>/dev/null || echo 0)
+        [[ "$_sz" -ge 50 ]] || continue  # 50-byte minimum: real summaries are much larger
+        _mp=$(jq -r '.project // empty' "${_dir}/manifest.json" 2>/dev/null)
+        if [[ "$_mp" == "$PROJECT_ROOT" ]]; then
+            SUMMARY_TEXT=$(cat "$_smf" 2>/dev/null || echo "")
+            _AV_TRACE_ID=$(basename "$_dir")
+            log_info "POST-TASK" "primary trace had no summary — found summary in $_AV_TRACE_ID (project-scoped scan)"
+            break
+        fi
+    done
+fi
+
+# No summary available after all fallbacks — cannot auto-verify, exit gracefully
 if [[ -z "$SUMMARY_TEXT" ]]; then
     log_info "POST-TASK" "no summary.md content available — skipping auto-verify"
     exit 0

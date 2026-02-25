@@ -15,7 +15,9 @@
 #   8.  Tester + proof already verified → dedup (no double-write)
 #   9.  Tester + proof-status missing → creates needs-verification (safety net)
 #  10.  Regression: track.sh still invalidates proof-status when no guardian breadcrumb
+#  11.  Full pipeline — subagent-start creates marker, tester writes summary, post-task auto-verifies
 #  17.  Session-based trace fallback — marker cleaned by SubagentStop, trace found by session scan
+#  18.  Dual-trace scenario — marker trace has no summary, summary in separate trace → verified (DEC-AV-DUAL-001)
 #
 # @decision DEC-PROOF-LIFE-001
 # @title post-task.sh test suite validates PostToolUse:Task auto-verify migration
@@ -490,47 +492,57 @@ fi
 rm -rf "$REPO" "$TRACE"
 
 # ===========================================================================
-# Test 11: Full pipeline — task-track.sh initializes tester trace, post-task.sh
-#          finds it and auto-verifies (DEC-PROOF-LIFE-004 integration test)
+# Test 11: Full pipeline — subagent-start.sh creates marker, tester writes summary,
+#          post-task.sh finds it and auto-verifies (DEC-AV-DUAL-002 integration test)
 #
-# Contract: When task-track.sh fires for a tester dispatch (PreToolUse:Task),
-#   it calls init_trace() which creates a .active-tester-* marker. The tester
-#   then writes summary.md to that trace directory. When post-task.sh fires
-#   (PostToolUse:Task), it finds the marker via detect_active_trace() and
-#   processes the summary to produce auto-verify.
+# Contract: task-track.sh no longer calls init_trace() for testers (DEC-AV-DUAL-002).
+#   Instead, subagent-start.sh creates the authoritative .active-tester-* marker.
+#   This test simulates subagent-start.sh's init_trace, then verifies that post-task.sh
+#   finds the marker and auto-verifies.
 # ===========================================================================
 
-run_test "T11: full pipeline — task-track.sh init_trace breadcrumb → post-task.sh auto-verify"
+run_test "T11: full pipeline — subagent-start creates marker → tester writes summary → post-task auto-verify"
 REPO=$(make_temp_repo)
 TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-pta-trace-XXXXXX")
 TASK_TRACK_SH="${HOOKS_DIR}/task-track.sh"
+_T11_SESSION="test-session-t11-$$"
 echo "pending|$(date +%s)" > "$REPO/.claude/.proof-status"
 
-# Step 1: Simulate PreToolUse:Task for a tester dispatch (as task-track.sh would see it)
+# Step 1: Confirm task-track.sh does NOT create .active-tester-* marker (DEC-AV-DUAL-002)
 TESTER_INPUT_JSON='{"tool_name":"Task","tool_input":{"subagent_type":"tester","prompt":"verify the feature"}}'
-TASK_TRACK_OUT=$(
+(
     export CLAUDE_PROJECT_DIR="$REPO"
     export TRACE_STORE="$TRACE"
-    export CLAUDE_SESSION_ID="test-session-t11-$$"
+    export CLAUDE_SESSION_ID="${_T11_SESSION}"
     cd "$REPO"
     echo "$TESTER_INPUT_JSON" | bash "$TASK_TRACK_SH" 2>/dev/null
 ) || true
 
-# Step 2: Verify .active-tester-* marker was created by init_trace
-ACTIVE_MARKER=$(ls "$TRACE"/.active-tester-* 2>/dev/null | head -1 || echo "")
-if [[ -z "$ACTIVE_MARKER" ]]; then
-    fail_test "task-track.sh did not create .active-tester-* marker in TRACE_STORE"
+ACTIVE_MARKER_AFTER_TRACK=$(ls "$TRACE"/.active-tester-* 2>/dev/null | head -1 || echo "")
+if [[ -n "$ACTIVE_MARKER_AFTER_TRACK" ]]; then
+    fail_test "task-track.sh still creates .active-tester-* marker — DEC-AV-DUAL-002 not applied"
     rm -rf "$REPO" "$TRACE"
 else
-    # Step 3: Get the trace_id from the marker and write summary.md as the tester would
-    TRACE_ID=$(cat "$ACTIVE_MARKER" 2>/dev/null || echo "")
-    if [[ -z "$TRACE_ID" ]]; then
-        fail_test ".active-tester-* marker exists but is empty (no trace_id)"
-        rm -rf "$REPO" "$TRACE"
-    else
-        TRACE_DIR_PATH="${TRACE}/${TRACE_ID}"
-        mkdir -p "${TRACE_DIR_PATH}/artifacts"
-        cat > "${TRACE_DIR_PATH}/summary.md" <<'SUMMARY_EOF'
+    # Step 2: Simulate subagent-start.sh creating the marker (the new authoritative path).
+    # In production, subagent-start.sh's init_trace() does this with the subagent's session_id.
+    _T11_PHASH=$(echo "$REPO" | shasum -a 256 | cut -c1-8)
+    _T11_TRACE_ID="tester-$(date +%s)-t11-subagent"
+    _T11_TRACE_DIR="${TRACE}/${_T11_TRACE_ID}"
+    mkdir -p "${_T11_TRACE_DIR}/artifacts"
+    cat > "${_T11_TRACE_DIR}/manifest.json" <<MANIFEST_EOF
+{
+  "trace_id": "${_T11_TRACE_ID}",
+  "agent_type": "tester",
+  "session_id": "${_T11_SESSION}",
+  "project": "${REPO}",
+  "status": "active",
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+MANIFEST_EOF
+    echo "$_T11_TRACE_ID" > "${TRACE}/.active-tester-${_T11_SESSION}-${_T11_PHASH}"
+
+    # Step 3: Tester writes summary.md to its trace directory
+    cat > "${_T11_TRACE_DIR}/summary.md" <<'SUMMARY_EOF'
 ## Verification Assessment
 
 AUTOVERIFY: CLEAN
@@ -540,29 +552,28 @@ AUTOVERIFY: CLEAN
 All features verified in the full pipeline test.
 SUMMARY_EOF
 
-        # Step 4: Run post-task.sh (simulating PostToolUse:Task for tester completion)
-        POST_TASK_INPUT='{"tool_name":"Task","tool_input":{"subagent_type":"tester","prompt":"verify the feature"}}'
-        (
-            export CLAUDE_PROJECT_DIR="$REPO"
-            export TRACE_STORE="$TRACE"
-            export CLAUDE_SESSION_ID="test-session-t11-$$"
-            cd "$REPO"
-            echo "$POST_TASK_INPUT" | bash "$POST_TASK_SH" 2>/dev/null
-        ) || true
+    # Step 4: Run post-task.sh (simulating PostToolUse:Task for tester completion)
+    POST_TASK_INPUT='{"tool_name":"Task","tool_input":{"subagent_type":"tester","prompt":"verify the feature"}}'
+    (
+        export CLAUDE_PROJECT_DIR="$REPO"
+        export TRACE_STORE="$TRACE"
+        export CLAUDE_SESSION_ID="${_T11_SESSION}"
+        cd "$REPO"
+        echo "$POST_TASK_INPUT" | bash "$POST_TASK_SH" 2>/dev/null
+    ) || true
 
-        # Step 5: Verify proof-status is now verified
-        if [[ -f "$REPO/.claude/.proof-status" ]]; then
-            STATUS=$(cut -d'|' -f1 "$REPO/.claude/.proof-status")
-            if [[ "$STATUS" == "verified" ]]; then
-                pass_test
-            else
-                fail_test "Expected 'verified' after full pipeline, got '$STATUS'"
-            fi
+    # Step 5: Verify proof-status is now verified
+    if [[ -f "$REPO/.claude/.proof-status" ]]; then
+        STATUS=$(cut -d'|' -f1 "$REPO/.claude/.proof-status")
+        if [[ "$STATUS" == "verified" ]]; then
+            pass_test
         else
-            fail_test ".proof-status was deleted during pipeline test"
+            fail_test "Expected 'verified' after full pipeline, got '$STATUS'"
         fi
-        rm -rf "$REPO" "$TRACE"
+    else
+        fail_test ".proof-status was deleted during pipeline test"
     fi
+    rm -rf "$REPO" "$TRACE"
 fi
 
 # ===========================================================================
@@ -826,6 +837,100 @@ else
     fi
     rm -rf "$REPO" "$TRACE"
 fi
+
+# ===========================================================================
+# Test 18: Dual-trace scenario — marker trace has no summary, summary in second trace
+#
+# Contract: When task-track.sh creates trace #1 with a marker (orchestrator session_id)
+#   but no summary.md, and subagent-start.sh creates trace #2 with summary.md but no
+#   marker (different subagent session_id), post-task.sh must find the summary via
+#   the project-scoped scan fallback (DEC-AV-DUAL-001) and auto-verify.
+#
+# This test simulates the exact dual-trace scenario:
+#   - Trace #1: has .active-tester-* marker (pointing to it) but no summary.md
+#   - Trace #2: has summary.md + valid manifest with project match, but no marker
+#   - CLAUDE_SESSION_ID matches trace #1's session, not trace #2's
+#   - post-task.sh must reach the project-scoped scan and find trace #2
+# ===========================================================================
+
+run_test "T18: dual-trace — marker trace has no summary, summary in different trace → verified"
+REPO=$(make_temp_repo)
+TRACE=$(mktemp -d "$PROJECT_ROOT/tmp/test-pta-trace-XXXXXX")
+echo "pending|$(date +%s)" > "$REPO/.claude/.proof-status"
+
+_T18_SESSION="t18-orchestrator-session-$$"
+_T18_SUBAGENT_SESSION="t18-subagent-session-$$"
+_PHASH=$(echo "$REPO" | shasum -a 256 | cut -c1-8)
+
+# Trace #1: created by task-track.sh — has the active marker but NO summary.md
+# (This is what task-track.sh's init_trace would create with orchestrator's session_id)
+_T18_TRACE1_ID="tester-$(date +%s)-t18-track"
+_T18_TRACE1_DIR="${TRACE}/${_T18_TRACE1_ID}"
+mkdir -p "${_T18_TRACE1_DIR}/artifacts"
+# No summary.md written — simulating task-track.sh's trace
+cat > "${_T18_TRACE1_DIR}/manifest.json" <<MANIFEST_EOF
+{
+  "trace_id": "${_T18_TRACE1_ID}",
+  "agent_type": "tester",
+  "session_id": "${_T18_SESSION}",
+  "project": "${REPO}",
+  "status": "active",
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+MANIFEST_EOF
+# Write the active marker pointing to trace #1 (as task-track.sh's init_trace would)
+echo "$_T18_TRACE1_ID" > "${TRACE}/.active-tester-${_T18_SESSION}-${_PHASH}"
+
+# Trace #2: created by subagent-start.sh — has summary.md but NO active marker
+# (Different session_id = subagent's session, not the orchestrator's)
+sleep 1  # ensure trace #2 sorts after trace #1 (newer timestamp)
+_T18_TRACE2_ID="tester-$(date +%s)-t18-subagent"
+_T18_TRACE2_DIR="${TRACE}/${_T18_TRACE2_ID}"
+mkdir -p "${_T18_TRACE2_DIR}/artifacts"
+cat > "${_T18_TRACE2_DIR}/summary.md" <<'SUMMARY_EOF'
+## Verification Assessment
+
+AUTOVERIFY: CLEAN
+
+**Confidence:** **High**
+
+All features verified. Dual-trace scenario — summary in subagent trace.
+SUMMARY_EOF
+cat > "${_T18_TRACE2_DIR}/manifest.json" <<MANIFEST_EOF
+{
+  "trace_id": "${_T18_TRACE2_ID}",
+  "agent_type": "tester",
+  "session_id": "${_T18_SUBAGENT_SESSION}",
+  "project": "${REPO}",
+  "status": "completed",
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+MANIFEST_EOF
+# No .active-tester-* marker for trace #2
+
+# Run post-task.sh with orchestrator's session_id.
+# Detection order: marker finds trace #1 (no summary) → session-scan finds trace #1 again
+# (session_id matches) → project-scoped scan finds trace #2 (has summary + project match).
+(
+    export CLAUDE_PROJECT_DIR="$REPO"
+    export TRACE_STORE="$TRACE"
+    export CLAUDE_SESSION_ID="${_T18_SESSION}"
+    cd "$REPO"
+    echo '{"tool_name":"Task","tool_input":{"subagent_type":"tester","prompt":"verify"}}' \
+        | bash "$POST_TASK_SH" 2>/dev/null
+) || true
+
+if [[ -f "$REPO/.claude/.proof-status" ]]; then
+    STATUS=$(cut -d'|' -f1 "$REPO/.claude/.proof-status")
+    if [[ "$STATUS" == "verified" ]]; then
+        pass_test
+    else
+        fail_test "Expected 'verified' via project-scoped scan (dual-trace fallback), got '$STATUS'"
+    fi
+else
+    fail_test ".proof-status was deleted (expected verified via dual-trace fallback)"
+fi
+rm -rf "$REPO" "$TRACE"
 
 # ===========================================================================
 # Syntax check
