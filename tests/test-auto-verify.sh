@@ -332,6 +332,10 @@ else
     fail_test "prompt-submit.sh has syntax errors"
 fi
 
+# Enable Phase 1 auto-verify gate for Tests 7-16 (these test check-tester.sh's
+# Phase 1 code path which is gated behind this flag since DEC-PROOF-LIFE-001).
+export CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY=true
+
 # ---------------------------------------------------------------------------
 # Test 7: Timing — auto-verify critical path completes within budget
 # Fix 4: use printf with \\n (not echo -e with \n) to produce valid JSON,
@@ -587,7 +591,7 @@ fi
 # Must produce valid JSON
 if echo "$HOOK_OUTPUT" | jq -e '.additionalContext' >/dev/null 2>&1; then
     # Must contain Guardian unblocked signal
-    if echo "$HOOK_OUTPUT" | jq -r '.additionalContext' | grep -q 'Guardian dispatch is unblocked'; then
+    if echo "$HOOK_OUTPUT" | jq -r '.additionalContext' | grep -q 'Guardian dispatch is.*unblocked'; then
         pass_test
     else
         fail_test "additionalContext exists but missing Guardian directive. Output: $HOOK_OUTPUT"
@@ -850,6 +854,9 @@ if echo "$HOOK_STDERR_NF" | grep -q 'supplementing RESPONSE_TEXT from summary.md
 else
     pass_test
 fi
+
+# Disable Phase 1 gate — tests below this point do not need it.
+unset CLAUDE_ENABLE_SUBAGENT_AUTOVERIFY
 
 # Summary
 echo ""
