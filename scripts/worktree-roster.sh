@@ -140,8 +140,9 @@ cmd_register() {
     init_registry
 
     # Remove existing entry if present (idempotent)
-    if grep -q "^${path}" "$REGISTRY" 2>/dev/null; then
-        grep -v "^${path}" "$REGISTRY" > "${REGISTRY}.tmp" || true
+    # Anchor with tab to prevent /foo matching /foobar
+    if grep -qF "${path}"$'\t' "$REGISTRY" 2>/dev/null; then
+        grep -vF "${path}"$'\t' "$REGISTRY" > "${REGISTRY}.tmp" || true
         mv "${REGISTRY}.tmp" "$REGISTRY"
     fi
 
@@ -397,8 +398,8 @@ cmd_cleanup() {
             removed=$((removed + 1))
         fi
 
-        # Remove from registry
-        grep -v "^${path}" "$REGISTRY" > "${REGISTRY}.tmp" || true
+        # Remove from registry (tab-anchored to prevent prefix collisions)
+        grep -vF "${path}"$'\t' "$REGISTRY" > "${REGISTRY}.tmp" || true
         mv "${REGISTRY}.tmp" "$REGISTRY"
     done
 
