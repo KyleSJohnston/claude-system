@@ -22,6 +22,9 @@
 #  15. guard.sh crash-deny degrades to allow during merge (MERGE_HEAD present)
 #  16. Gate C.1 denies implementer on main without worktrees
 #  17. Gate C.1 allows implementer on main with linked worktree
+#  18. Gate C.1 denies implementer on feature branch from main worktree (no linked WTs)
+#  19. Gate C.1 allows implementer on feature branch with linked worktree present
+#  20. Gate C.1 allows implementer dispatched from within a linked worktree
 #
 # @decision DEC-GOVERNANCE-TEST-001
 # @title Test suite for orchestrator governance hardening
@@ -367,6 +370,32 @@ else
     pass "Test 15 skipped — cannot determine ~/.claude git dir"
 fi
 
+# Helper: simulate Gate C.1 logic (DEC-GATE-C1-002 — worktree identity check)
+# Args: $1=PROJECT_ROOT, $2=PWD_OVERRIDE (optional, defaults to PROJECT_ROOT)
+# Outputs: "1" if denied, "0" if allowed
+run_gate_c1() {
+    local project_root="$1"
+    local pwd_override="${2:-$1}"
+    (
+        MAIN_WT=$(git -C "$project_root" worktree list --porcelain 2>/dev/null \
+            | awk '/^worktree /{print $2; exit}')
+        CURRENT_BRANCH=$(git -C "$project_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+        # Resolve symlinks for comparison (macOS: /var → /private/var)
+        RESOLVED_ROOT=$(cd "$project_root" 2>/dev/null && pwd -P)
+        RESOLVED_MAIN_WT=$(cd "$MAIN_WT" 2>/dev/null && pwd -P || echo "")
+        RESOLVED_PWD=$(cd "$pwd_override" 2>/dev/null && pwd -P || echo "$pwd_override")
+        if [[ -n "$RESOLVED_MAIN_WT" && ( "$RESOLVED_ROOT" == "$RESOLVED_MAIN_WT" || "$RESOLVED_PWD" == "$RESOLVED_MAIN_WT"* ) ]]; then
+            WORKTREE_COUNT=$(git -C "$project_root" worktree list --porcelain 2>/dev/null \
+                | grep -c '^worktree ' || echo "0")
+            if [[ "$WORKTREE_COUNT" -le 1 ]]; then
+                echo "1"
+                exit 0
+            fi
+        fi
+        echo "0"
+    )
+}
+
 # ============================================================
 # Test 16: Gate C.1 denies implementer on main without worktrees
 # ============================================================
@@ -375,38 +404,12 @@ echo "=== Test 16: Gate C.1 denies implementer on main without worktrees ==="
 
 REPO16=$(make_git_repo_on_main)
 
-# Simulate task-track.sh Gate C.1 logic inline (can't run the full hook easily)
-(
-    source "${HOOKS_DIR}/source-lib.sh" 2>/dev/null
-
-    PROJECT_ROOT="$REPO16"
-    deny_called=0
-    deny_msg=""
-    deny() {
-        deny_called=1
-        deny_msg="$1"
-    }
-
-    AGENT_TYPE="implementer"
-    CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-        WORKTREE_COUNT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
-            | grep -c '^worktree ' || echo "0")
-        if [[ "$WORKTREE_COUNT" -le 1 ]]; then
-            deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch."
-        fi
-    fi
-
-    echo "${deny_called}|${deny_msg}"
-) | {
-    read result16
-    deny_called16=$(echo "$result16" | cut -d'|' -f1)
-    if [[ "$deny_called16" == "1" ]]; then
-        pass "Gate C.1 denies implementer on main without worktrees"
-    else
-        fail "Gate C.1 should deny implementer on main without worktrees"
-    fi
-}
+RESULT16=$(run_gate_c1 "$REPO16")
+if [[ "$RESULT16" == "1" ]]; then
+    pass "Gate C.1 denies implementer on main without worktrees"
+else
+    fail "Gate C.1 should deny implementer on main without worktrees"
+fi
 
 # ============================================================
 # Test 17: Gate C.1 allows implementer on main with linked worktree
@@ -415,38 +418,68 @@ echo ""
 echo "=== Test 17: Gate C.1 allows implementer on main with linked worktree ==="
 
 REPO17=$(make_git_repo_on_main)
-# Create a linked worktree
 git -C "$REPO17" worktree add "${REPO17}/.worktrees/feature-test" -b feature-test 2>/dev/null
 CLEANUP_DIRS+=("${REPO17}/.worktrees/feature-test")
 
-(
-    source "${HOOKS_DIR}/source-lib.sh" 2>/dev/null
+RESULT17=$(run_gate_c1 "$REPO17")
+if [[ "$RESULT17" == "0" ]]; then
+    pass "Gate C.1 allows implementer on main with linked worktree"
+else
+    fail "Gate C.1 should allow implementer on main with linked worktree"
+fi
 
-    PROJECT_ROOT="$REPO17"
-    deny_called=0
-    deny() {
-        deny_called=1
-    }
+# ============================================================
+# Test 18: Gate C.1 denies implementer on feature branch from main worktree
+# ============================================================
+echo ""
+echo "=== Test 18: Gate C.1 denies implementer on feature branch (main worktree, no linked WTs) ==="
 
-    AGENT_TYPE="implementer"
-    CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-        WORKTREE_COUNT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
-            | grep -c '^worktree ' || echo "0")
-        if [[ "$WORKTREE_COUNT" -le 1 ]]; then
-            deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch."
-        fi
-    fi
+REPO18=$(make_git_repo_on_main)
+# Switch to a feature branch — still in the main worktree
+git -C "$REPO18" checkout -b feature/test-branch 2>/dev/null
 
-    echo "${deny_called}"
-) | {
-    read deny_called17
-    if [[ "$deny_called17" == "0" ]]; then
-        pass "Gate C.1 allows implementer on main with linked worktree"
-    else
-        fail "Gate C.1 should allow implementer on main with linked worktree"
-    fi
-}
+RESULT18=$(run_gate_c1 "$REPO18")
+if [[ "$RESULT18" == "1" ]]; then
+    pass "Gate C.1 denies implementer on feature branch from main worktree"
+else
+    fail "Gate C.1 should deny implementer on feature branch from main worktree (the enforcement gap fix)"
+fi
+
+# ============================================================
+# Test 19: Gate C.1 allows implementer on feature branch with linked worktree
+# ============================================================
+echo ""
+echo "=== Test 19: Gate C.1 allows implementer on feature branch (main worktree, linked WT exists) ==="
+
+REPO19=$(make_git_repo_on_main)
+git -C "$REPO19" checkout -b feature/test-branch 2>/dev/null
+git -C "$REPO19" worktree add "${REPO19}/.worktrees/impl-wt" -b feature/impl 2>/dev/null
+CLEANUP_DIRS+=("${REPO19}/.worktrees/impl-wt")
+
+RESULT19=$(run_gate_c1 "$REPO19")
+if [[ "$RESULT19" == "0" ]]; then
+    pass "Gate C.1 allows implementer on feature branch with linked worktree"
+else
+    fail "Gate C.1 should allow when linked worktree exists (even from main worktree)"
+fi
+
+# ============================================================
+# Test 20: Gate C.1 allows implementer dispatched from linked worktree
+# ============================================================
+echo ""
+echo "=== Test 20: Gate C.1 allows implementer dispatched from linked worktree ==="
+
+REPO20=$(make_git_repo_on_main)
+git -C "$REPO20" worktree add "${REPO20}/.worktrees/impl-wt" -b feature/impl 2>/dev/null
+CLEANUP_DIRS+=("${REPO20}/.worktrees/impl-wt")
+
+# Simulate dispatch from the linked worktree (PROJECT_ROOT = linked WT path)
+RESULT20=$(run_gate_c1 "${REPO20}/.worktrees/impl-wt" "${REPO20}/.worktrees/impl-wt")
+if [[ "$RESULT20" == "0" ]]; then
+    pass "Gate C.1 allows implementer dispatched from linked worktree"
+else
+    fail "Gate C.1 should allow implementer running inside a linked worktree"
+fi
 
 # ============================================================
 # Test 18: Gate C.1 denies implementer on feature branch without worktrees

@@ -105,12 +105,12 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
             #   Without this guard, track.sh fires on those writes and resets
             #   .proof-status from verified→pending mid-workflow, causing deadlock.
             # @decision DEC-TRACK-GUARDIAN-TTL-001
-            # @title Apply 5-minute TTL to guardian marker check in track.sh
+            # @title Guardian marker TTL — 5-minute expiry prevents stale markers
             # @status accepted
-            # @rationale Guardian writes .active-guardian-* markers with format
-            #   "pre-dispatch|<timestamp>" so expired markers (stale session crashes)
-            #   don't permanently exempt proof invalidation. TTL is 300s (5 min).
-            #   Matches the marker format written by task-track.sh (line 88).
+            # @rationale If Guardian crashes or is interrupted, its marker file persists
+            #   indefinitely, permanently blocking proof invalidation. A 5-minute TTL
+            #   ensures stale markers auto-expire. Markers now contain a timestamp
+            #   (format: "pre-dispatch|<epoch>") written by check-guardian.sh.
             _guardian_active=false
             # @decision DEC-TRACK-GUARDIAN-TTL-001
             # @title Apply 5-minute TTL to guardian marker check in track.sh

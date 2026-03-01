@@ -53,8 +53,8 @@ is_source_file "$FILE_PATH" || exit 0
 # Skip test files, config files, vendor directories
 is_skippable_path "$FILE_PATH" && exit 0
 
-# Skip files in this config directory itself (meta-infrastructure — main and worktrees)
-[[ "$FILE_PATH" =~ \.claude(/\.worktrees/[^/]+)?/hooks/ ]] && exit 0
+# Skip files in this config directory itself (meta-infrastructure)
+[[ "$FILE_PATH" =~ \.claude/hooks/ ]] && exit 0
 
 deny() {
     local reason="$1"

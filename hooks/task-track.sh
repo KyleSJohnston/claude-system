@@ -38,7 +38,7 @@ write_statusline_cache "$PROJECT_ROOT"
 if [[ "${HOOK_GATE_SCAN:-}" == "1" ]]; then
     declare_gate "guardian-proof-gate" "Guardian requires .proof-status = verified" "deny"
     declare_gate "tester-impl-gate" "Tester requires implementer to have returned" "advisory"
-    declare_gate "implementer-worktree-gate" "Implementer dispatch activates proof gate" "deny"
+    declare_gate "implementer-worktree-gate" "Implementer must run in linked worktree, not main checkout" "deny"
     emit_flush
     exit 0
 fi
@@ -193,26 +193,44 @@ fi
 # The breadcrumb lets resolve_proof_file() (in log.sh) find the correct path
 # so prompt-submit.sh, check-tester.sh, and guard.sh all operate on the same file.
 #
-# Gate C.1: Block implementer on any branch without a linked worktree (Sacred Practice #2).
+# Gate C.1: Implementer must run in a linked worktree, not the main checkout.
 # @decision DEC-TASK-GATE-001
-# @title Extend Gate C.1 to all branches, not just main/master
-# @status accepted
-# @rationale The original gate only blocked implementer dispatch on main/master,
-#   allowing direct code writes on feature branches without worktree isolation.
-#   Sacred Practice #2 requires ALL implementation work in worktrees. Extended
-#   to check worktree count on any branch. If CWD is already inside a worktree,
-#   the check passes (the orchestrator followed the practice).
-declare_gate "implementer-worktree-gate" "Implementer dispatch activates proof gate" "deny"
+# @title Block implementer dispatch on main/master unless worktree exists
+# @status superseded
+# @rationale Superseded by DEC-GATE-C1-002 which checks worktree identity
+#   instead of branch name. The original gate only fired on main/master,
+#   allowing bypass when the orchestrator was on a feature branch.
+declare_gate "implementer-worktree-gate" "Implementer must run in linked worktree, not main checkout" "deny"
 if [[ "$AGENT_TYPE" == "implementer" ]]; then
-    # Gate C.1: Block implementer on any branch without a linked worktree (Sacred Practice #2).
-    # Extended from main/master-only to all branches — Sacred Practice #2 applies everywhere.
+    # Gate C.1: Implementer must run in a linked worktree, not the main checkout.
+    # Previous version only checked branch name (main/master), allowing bypass on
+    # feature branches checked out in the main worktree. This version checks whether
+    # we're in the main worktree itself (first entry in `git worktree list`).
+    #
+    # @decision DEC-GATE-C1-002
+    # @title Expand Gate C.1 to enforce worktree isolation on all branches
+    # @status accepted
+    # @rationale The original Gate C.1 only fired when CURRENT_BRANCH was main/master.
+    #   When the orchestrator was on a feature branch (e.g., feature/metanoia-deploy),
+    #   the gate was completely bypassed — agents worked directly on the feature branch
+    #   without worktree isolation. This caused monolithic commits and prevented parallel
+    #   development. The fix checks the worktree identity (main vs linked) instead of the
+    #   branch name. Implementer dispatched from a linked worktree passes. Implementer
+    #   dispatched from the main worktree requires at least one linked worktree to exist.
+    MAIN_WT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree /{print $2; exit}')
     CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-    WORKTREE_COUNT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
-        | grep -c '^worktree ' || echo "0")
-    IS_IN_WORKTREE=false
-    if [[ "$PWD" == *"/.worktrees/"* ]]; then IS_IN_WORKTREE=true; fi
-    if [[ "$WORKTREE_COUNT" -le 1 && "$IS_IN_WORKTREE" == "false" ]]; then
-        emit_deny "Cannot dispatch implementer on '$CURRENT_BRANCH' without a linked worktree. Sacred Practice #2: create a worktree first. Use: git worktree add .worktrees/<name> -b feature/<name>"
+    # Resolve symlinks for comparison (macOS: /var → /private/var)
+    RESOLVED_ROOT=$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P)
+    RESOLVED_MAIN_WT=$(cd "$MAIN_WT" 2>/dev/null && pwd -P || echo "")
+    RESOLVED_PWD=$(pwd -P 2>/dev/null || echo "$PWD")
+    if [[ -n "$RESOLVED_MAIN_WT" && ( "$RESOLVED_ROOT" == "$RESOLVED_MAIN_WT" || "$RESOLVED_PWD" == "$RESOLVED_MAIN_WT"* ) ]]; then
+        # We're in the main worktree — implementer must use isolation
+        WORKTREE_COUNT=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
+            | grep -c '^worktree ' || echo "0")
+        if [[ "$WORKTREE_COUNT" -le 1 ]]; then
+            emit_deny "Cannot dispatch implementer from main worktree (branch: '$CURRENT_BRANCH'). Sacred Practice #2: create a worktree first. Use: git worktree add .worktrees/<name> -b feature/<name>"
+        fi
     fi
 
     # Gate C.2: Activate proof gate — creates .proof-status-{phash} = needs-verification.
