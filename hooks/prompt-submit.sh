@@ -36,7 +36,16 @@ if [[ -z "$PROMPT" ]]; then
     _EMPTY_HINT="User pressed Enter without text. This is normal interaction — treat as approval or continuation of the current flow. Do NOT comment on the empty message."
     _EMPTY_CLAUDE_DIR=$(get_claude_dir 2>/dev/null || echo "")
     if [[ -n "$_EMPTY_CLAUDE_DIR" ]]; then
-        _EMPTY_PROOF="${_EMPTY_CLAUDE_DIR}/.proof-status"
+        # @decision DEC-PROOF-SCOPE-002
+        # @title Scoped proof-status lookup with legacy fallback in empty-prompt path
+        # @status accepted
+        # @rationale Empty-prompt handler read unscoped .proof-status directly, missing
+        #   the case where only the scoped file (.proof-status-{phash}) exists. This
+        #   caused the approval-keyword hint to never appear when only the scoped file
+        #   was present. Fix: resolve scoped path first, fall back to legacy.
+        _EMPTY_PHASH=$(project_hash "$(detect_project_root 2>/dev/null || echo "$HOME")")
+        _EMPTY_PROOF="${_EMPTY_CLAUDE_DIR}/.proof-status-${_EMPTY_PHASH}"
+        [[ -f "$_EMPTY_PROOF" ]] || _EMPTY_PROOF="${_EMPTY_CLAUDE_DIR}/.proof-status"
         if [[ -f "$_EMPTY_PROOF" ]]; then
             _EMPTY_STATUS=$(cut -d'|' -f1 "$_EMPTY_PROOF" 2>/dev/null || echo "")
             if [[ "$_EMPTY_STATUS" == "pending" ]]; then

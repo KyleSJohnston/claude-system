@@ -113,9 +113,19 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
                 #   meta-repo (~/.claude) to be excluded because their paths contain
                 #   ".claude". Relative path restricts exclusion to within the project.
                 RELATIVE_PATH="${FILE_PATH#${PROJECT_ROOT}/}"
+                # @decision DEC-PROOF-SCOPE-001
+                # @title Use write_proof_status() for invalidation to keep all three paths in sync
+                # @status accepted
+                # @rationale Single-file echo "pending" > "$PROOF_FILE" only updated whichever
+                #   path was resolved (scoped, legacy, or worktree). write_proof_status() from
+                #   log.sh writes all three paths atomically, preventing deadlock where legacy
+                #   stays "verified" after a source edit resets only the scoped file.
+                #   Also adds is_test_file() to catch /tests/ and /test/ paths that the inline
+                #   regex missed, avoiding false proof invalidation on test file edits.
                 if [[ "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] \
-                   && [[ ! "$RELATIVE_PATH" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]]; then
-                    echo "pending|$(date +%s)" > "$PROOF_FILE"
+                   && [[ ! "$RELATIVE_PATH" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]] \
+                   && ! is_test_file "$FILE_PATH"; then
+                    write_proof_status "pending" "$PROJECT_ROOT"
                 fi
             fi
         fi
