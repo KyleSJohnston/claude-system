@@ -240,9 +240,11 @@ All hooks are registered in `settings.json` and run deterministically — JSON i
 For the full protocol, detailed tables, enforcement patterns, state files, and shared library APIs, see [`hooks/HOOKS.md`](hooks/HOOKS.md).
 
 **Shared Libraries** (not registered as hooks — sourced by hook scripts):
-- `context-lib.sh` — Git state, plan status, worktree inventory, shared utilities
-- `source-lib.sh` — Source file detection, language identification
-- `log.sh` — Structured logging with levels and rotation
+- `source-lib.sh` — Bootstrap loader: sources `log.sh` + `core-lib.sh` (667 lines total). Provides `require_*()` lazy loaders for domain libraries. All hooks source this first.
+- `log.sh` — JSON I/O, stdin caching, path utilities (`detect_project_root`, `resolve_proof_file`)
+- `core-lib.sh` — deny/allow/advisory output helpers, atomic writes, shared predicates
+- `context-lib.sh` — **Compatibility shim**: sources all domain libraries for backward compatibility. Used by test files and `diagnose.sh`. New hooks use `require_*()` instead.
+- Domain libraries loaded on demand: `git-lib.sh`, `plan-lib.sh`, `trace-lib.sh`, `session-lib.sh`, `doc-lib.sh`, `ci-lib.sh`
 
 **PreToolUse Hooks** — fire before every tool call; can block or rewrite:
 
@@ -377,6 +379,10 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 | `statusline.sh` | Status bar enrichment from `.statusline-cache` |
 | `update-check.sh` | Auto-update with breaking change detection |
 | `batch-fetch.py` | Cascade-proof multi-URL fetching (use for 3+ URLs) |
+| `hook-timing-report.sh` | Parse `.hook-timing.log` for hook performance analysis — shows p50/p95/max latency per hook and flags slow hooks |
+| `ci-watch.sh` | Watch CI status for the current branch; polls GitHub Actions and reports pass/fail |
+| `clean-state.sh` | Clean up stale state files (`.test-status`, `.proof-status`, `.agent-findings`) when the hook system gets into a bad state |
+| `repair-traces.sh` | Repair corrupted or incomplete trace manifests; re-indexes `traces/index.jsonl` |
 
 ---
 

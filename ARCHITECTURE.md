@@ -77,9 +77,16 @@ State files bridge the gap — hooks communicate with each other through files, 
 │   ├── stop.sh               # Stop — decision audit + session summary + next steps (consolidates surface.sh, session-summary.sh, forward-motion.sh)
 │   ├── session-end.sh        # SessionEnd — cleanup
 │   ├── notify.sh             # Notification — permission/idle alerts
-│   ├── context-lib.sh        # Shared library — context builders, state I/O
-│   ├── log.sh                # Shared library — JSON I/O, path utilities
-│   └── source-lib.sh         # Shared library — bootstrapper for log.sh + context-lib.sh
+│   ├── context-lib.sh        # Shared library — compatibility shim: sources all domain libs
+│   ├── core-lib.sh           # Shared library — deny/allow/advisory output, atomic writes
+│   ├── git-lib.sh            # Shared library — git state, branch guards, worktree safety
+│   ├── plan-lib.sh           # Shared library — plan lifecycle, staleness scoring
+│   ├── trace-lib.sh          # Shared library — trace init/finalize, audit trail
+│   ├── session-lib.sh        # Shared library — session summary, trajectory, compaction
+│   ├── doc-lib.sh            # Shared library — @decision enforcement, doc-gate rules
+│   ├── ci-lib.sh             # Shared library — CI detection, workflow helpers
+│   ├── log.sh                # Shared library — JSON I/O, stdin caching, path utilities
+│   └── source-lib.sh         # Shared library — bootstrapper (log.sh + core-lib.sh) + require_*() lazy loaders
 ├── agents/                   # 4 agent prompt definitions
 │   ├── planner.md            # Planner agent — MASTER_PLAN.md creation
 │   ├── implementer.md        # Implementer agent — test-first development
@@ -100,7 +107,11 @@ State files bridge the gap — hooks communicate with each other through files, 
 │   ├── statusline.sh         # Status bar renderer
 │   ├── worktree-roster.sh    # Worktree lifecycle tracking
 │   ├── update-check.sh       # Git-based auto-update
-│   └── batch-fetch.py        # Cascade-proof multi-URL fetcher
+│   ├── batch-fetch.py        # Cascade-proof multi-URL fetcher
+│   ├── hook-timing-report.sh # Parse .hook-timing.log — p50/p95/max latency per hook
+│   ├── ci-watch.sh           # Poll GitHub Actions CI status for current branch
+│   ├── clean-state.sh        # Remove stale state files (test-status, proof-status, findings)
+│   └── repair-traces.sh      # Repair corrupted trace manifests; re-index traces/index.jsonl
 ├── traces/                   # Agent trace store
 │   ├── index.jsonl           # Global trace index (one entry per trace)
 │   ├── .active-<type>-<id>   # Active agent markers
@@ -423,7 +434,12 @@ reason message. See upstream issue anthropics/claude-code#26506.
 - `.claude/.cwd-recovery-needed` — canary file for CWD recovery (one-shot)
 
 **Configuration:** pre-bash.sh has no configuration options. All thresholds are
-constants in `context-lib.sh` (`TEST_STALENESS_THRESHOLD=600` seconds).
+constants in `core-lib.sh` (`TEST_STALENESS_THRESHOLD=600` seconds).
+
+**Performance optimization — early-exit deferred `require_session`:**
+`require_session` (loads session-lib.sh) is deferred to after the early-exit gate.
+Non-git commands (ls, cat, echo, grep, etc.) exit at the early-exit gate without
+ever loading session-lib.sh — avoiding ~800 lines of parse overhead for the common case.
 
 **Incorporated functionality:**
 
@@ -476,7 +492,7 @@ of write — before errors can compound.
 - **doc-gate:** Enforces documentation headers on new source files. 50+ line files also
   require a `@decision` annotation. Language-aware header detection for Python, TypeScript,
   Go, Rust, Shell, C/C++, Java, Ruby, PHP. Test files, config files, and vendor dirs exempt.
-  Configuration: `DECISION_LINE_THRESHOLD=50` in `context-lib.sh`.
+  Configuration: `DECISION_LINE_THRESHOLD=50` in `doc-lib.sh`.
 
 - **plan-check:** Blocks source writes without `MASTER_PLAN.md`. Detects stale plans
   via composite signal: source churn % + decision drift count.
@@ -488,6 +504,12 @@ of write — before errors can compound.
   Triggers every 5th write or first write to any file in the session. Uses git plumbing
   (write-tree + commit-tree + update-ref) — no impact on working copy, git status, or stash.
   Only fires on feature branches in git repos. Exempt for meta-repo.
+
+**Performance optimization — worktree-aware gate skipping:**
+When the write target path contains `/.worktrees/`, pre-write.sh sets `_IN_WORKTREE=true`.
+plan-check and doc-gate are skipped for worktree writes — these checks are already enforced
+at the orchestrator level, and skipping them avoids false positives on in-progress work
+before MASTER_PLAN.md is updated.
 
 **State files read/written:** `.claude/.test-gate-strikes`, `.claude/.mock-gate-strikes`,
 `.claude/.test-status`, `.claude/.session-events.jsonl`, `.claude/.plan-drift`,
@@ -1200,25 +1222,78 @@ Provides interactive system health diagnostics. Checks:
 
 ---
 
-## 12. Shared Libraries
+### hook-timing-report.sh
 
-Three files form the shared library layer. All hooks source `source-lib.sh`
-which bootstraps `log.sh` and `context-lib.sh`.
+**What it does:** Performance analysis tool that parses `.hook-timing.log` and reports
+per-hook latency statistics (p50, p95, max). Identifies slow hooks and high-frequency callers.
+
+**Why it exists:** Hook timing is recorded by source-lib.sh's EXIT trap on every hook
+invocation. `hook-timing-report.sh` aggregates this data to validate performance claims
+(e.g., "pre-bash.sh with lazy loading takes ~60ms vs. ~180ms before optimization") and
+flag regressions.
+
+**Usage:**
+```bash
+# Show summary report
+bash scripts/hook-timing-report.sh
+
+# Show top 10 slowest invocations
+bash scripts/hook-timing-report.sh --top 10
+
+# Filter to a specific hook
+bash scripts/hook-timing-report.sh --hook pre-bash
+```
+
+**Data source:** `$CLAUDE_DIR/.hook-timing.log` — tab-separated:
+`timestamp hook_name event_type elapsed_ms exit_code`
 
 ---
 
-### source-lib.sh (bootstrapper)
+## 12. Shared Libraries
 
-**What it does:** Sources `log.sh` and `context-lib.sh`. Also recovers from
-deleted-CWD before any hook logic runs.
+Seven files form the shared library layer. All hooks source `source-lib.sh` which bootstraps
+`log.sh` and `core-lib.sh` (667 lines). Domain libraries are loaded on demand via `require_*()`
+lazy loaders — each hook loads only what it needs.
+
+**Library loading architecture (Phase 2 optimization):**
+
+```
+source-lib.sh (loaded by every hook)
+├── log.sh        — 314 lines (always loaded)
+├── core-lib.sh   — 400 lines (always loaded)
+└── require_*() lazy loaders:
+    ├── require_git()     → git-lib.sh
+    ├── require_plan()    → plan-lib.sh
+    ├── require_trace()   → trace-lib.sh
+    ├── require_session() → session-lib.sh
+    ├── require_doc()     → doc-lib.sh
+    └── require_ci()      → ci-lib.sh
+
+context-lib.sh (compatibility shim — sources all domain libs, used by tests/diagnose.sh)
+```
+
+Previously `source-lib.sh` sourced `context-lib.sh` which loaded all domain libraries
+(3,175 lines total). Now every hook pays only 667 lines on startup; domain libraries
+are loaded on demand. `require_all()` was removed in Phase 3 (dead code — no hook called it).
+
+---
+
+### source-lib.sh (bootstrapper + lazy loaders)
+
+**What it does:** Sources `log.sh` and `core-lib.sh`. Provides `require_*()` idempotent
+lazy loaders for all domain libraries. Also recovers from deleted-CWD before any hook
+logic runs. Instruments hook timing via EXIT trap (writes to `.hook-timing.log`).
 
 **Why it exists:** Before the library caching approach was removed (DEC-SRCLIB-001),
 each hook individually sourced the libraries. A centralized bootstrapper eliminates
-the redundancy and adds the CWD recovery guard at the single point all hooks share.
+redundancy, adds the CWD recovery guard at the single point all hooks share, and enables
+lazy loading so hooks pay only for the libraries they use (DEC-PERF-002).
 
 **What you can count on:**
 - `[[ ! -d "${PWD:-}" ]] && { cd "${HOME}" 2>/dev/null || cd /; }` runs before any other logic.
 - All hooks source this file as their first dependency.
+- `require_git()`, `require_plan()`, `require_trace()`, `require_session()`, `require_doc()`, `require_ci()` are safe to call multiple times (idempotent guards prevent double-sourcing).
+- Hook wall-clock timing is recorded to `$CLAUDE_DIR/.hook-timing.log` via EXIT trap (≤1ms overhead).
 
 ---
 
@@ -1244,54 +1319,55 @@ and returns the worktree path when active; falls back to CLAUDE_DIR otherwise.
 
 ---
 
-### context-lib.sh (state builders + shared utilities)
+### context-lib.sh (compatibility shim)
 
-**What it does:** The largest library (57KB). Provides all state-reading functions,
-constants, helper predicates, subagent tracking, trace protocol functions, and utilities.
+**What it does:** Sources all domain libraries (`core-lib.sh`, `git-lib.sh`, `plan-lib.sh`,
+`trace-lib.sh`, `session-lib.sh`, `doc-lib.sh`, `ci-lib.sh`) for backward compatibility.
+Used by 15+ test files and `diagnose.sh` that source it directly. Production hooks use
+`require_*()` from `source-lib.sh` instead.
 
-**Constants:**
+**Why it exists:** When the 2,221-line monolith was decomposed into domain libraries,
+this shim preserved backward compatibility for all existing callers with zero code changes.
+New code should not use `context-lib.sh` directly — use `require_*()` for lazy loading.
+
+The functions formerly in `context-lib.sh` are now in domain libraries:
+
+| Domain | Library | Key Functions |
+|--------|---------|---------------|
+| I/O, output, predicates | `core-lib.sh` | `deny()`, `allow()`, `advisory()`, `atomic_write()`, `is_source_file()`, `is_skippable_path()`, `append_audit()` |
+| Git state | `git-lib.sh` | `get_git_state()` |
+| Plan lifecycle | `plan-lib.sh` | `get_plan_status()`, `compress_initiative()` |
+| Trace protocol | `trace-lib.sh` | `init_trace()`, `finalize_trace()`, `index_trace()` |
+| Session & context | `session-lib.sh` | `get_session_changes()`, `get_drift_data()`, `build_resume_directive()`, `write_statusline_cache()`, track_subagent_*() |
+| Documentation | `doc-lib.sh` | `check_doc_header()`, `check_decision_annotation()` |
+| CI integration | `ci-lib.sh` | CI detection helpers |
+
+**Key constants** (defined across domain libraries):
+
 ```bash
-DECISION_LINE_THRESHOLD=50        # Lines before @decision is required
-TEST_STALENESS_THRESHOLD=600      # 10 minutes — stale test status is ignored
-SESSION_STALENESS_THRESHOLD=1800  # 30 minutes
+DECISION_LINE_THRESHOLD=50        # Lines before @decision is required (doc-lib.sh)
+TEST_STALENESS_THRESHOLD=600      # 10 minutes — stale test status is ignored (core-lib.sh)
+SESSION_STALENESS_THRESHOLD=1800  # 30 minutes (core-lib.sh)
 SOURCE_EXTENSIONS='ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh'
 TRACE_STORE="$HOME/.claude/traces"
 ```
 
-**State-reading functions:**
+**Selected function reference** (see domain library files for complete API):
 - `get_git_state <root>` → `GIT_BRANCH`, `GIT_DIRTY_COUNT`, `GIT_WORKTREES`, `GIT_WT_COUNT`
-- `get_plan_status <root>` → `PLAN_EXISTS`, `PLAN_PHASE`, `PLAN_TOTAL_PHASES`, `PLAN_COMPLETED_PHASES`, `PLAN_SOURCE_CHURN_PCT`, `PLAN_LIFECYCLE` (none/active/dormant), `PLAN_ACTIVE_INITIATIVES` (count), `PLAN_TOTAL_INITIATIVES` (count). Living-document format detected by `### Initiative:` headers. Dormant = plan exists but no active initiatives remain — add a new initiative, not a new plan.
+- `get_plan_status <root>` → `PLAN_EXISTS`, `PLAN_PHASE`, `PLAN_TOTAL_PHASES`, `PLAN_SOURCE_CHURN_PCT`, `PLAN_LIFECYCLE` (none/active/dormant). Living-document format detected by `### Initiative:` headers. Dormant = plan exists but all initiatives completed — add a new initiative.
 - `get_session_changes <root>` → `SESSION_CHANGED_COUNT`
 - `get_drift_data <root>` → `DRIFT_UNPLANNED_COUNT`, `DRIFT_UNIMPLEMENTED_COUNT`, `DRIFT_LAST_AUDIT_EPOCH`
-- `get_research_status <root>` → `RESEARCH_EXISTS`, `RESEARCH_ENTRY_COUNT`, `RESEARCH_RECENT_TOPICS`
-- `read_test_status <root>` → `TEST_RESULT`, `TEST_FAILS`, `TEST_TIME`, `TEST_AGE`
-
-**Helper predicates:**
 - `is_source_file <file>` — checks extension against SOURCE_EXTENSIONS
 - `is_skippable_path <file>` — checks for test, config, vendor, build directories
 - `is_test_file <file>` — checks for .test., .spec., __tests__, _test.go, test_*.py, /tests/
 - `is_claude_meta_repo <root>` — returns true if root is ~/.claude (meta-infrastructure)
-- `validate_state_file <file> <field_count>` — guards corrupt/empty file reads
-
-**State-writing functions:**
-- `write_statusline_cache <root>` — writes JSON to `.statusline-cache` (atomic)
 - `atomic_write <target> <content>` — temp-file-then-mv for POSIX-safe atomic writes
 - `safe_cleanup <target> <fallback>` — cd-out-first before deletion to prevent CWD death
-- `archive_plan <root>` — moves MASTER_PLAN.md to archived-plans/ with date prefix. **Deprecated for living-document format** — use `compress_initiative()` instead, which preserves the plan.
-- `compress_initiative <root> <initiative_name>` — moves a completed initiative from `## Active Initiatives` to `## Completed Initiatives` as a table row (~5 lines). Keeps the plan growing in place. Use after Guardian confirms all phases in the initiative are done.
+- `compress_initiative <root> <initiative_name>` — moves a completed initiative from `## Active Initiatives` to `## Completed Initiatives` (~5 lines). Keeps the plan growing in place.
 - `append_audit <root> <event> <detail>` — appends to `.audit-log`
-- `append_session_event <event> <json> <root>` — appends to `.session-events.jsonl`
-
-**Subagent tracking:**
-- `track_subagent_start <root> <type>` — appends `ACTIVE|<type>|<epoch>` to tracker
-- `track_subagent_stop <root> <type>` — converts oldest matching ACTIVE to `DONE|<type>|<start>|<duration>`
-- `get_subagent_status <root>` → `SUBAGENT_ACTIVE_COUNT`, `SUBAGENT_ACTIVE_TYPES`, `SUBAGENT_TOTAL_COUNT`
-
-**Trace protocol:**
 - `init_trace <root> <agent_type>` — creates trace directory + manifest + active marker
-- `detect_active_trace <root> <agent_type>` — finds trace_id for current session
 - `finalize_trace <trace_id> <root> <agent_type>` — updates manifest with outcome, duration, files changed
-- `index_trace <trace_id>` — appends to `traces/index.jsonl`
+- `track_subagent_start <root> <type>` / `track_subagent_stop <root> <type>` — agent lifecycle tracking
 
 **Churn cache:** `get_plan_status` caches expensive git calculations in
 `.claude/.plan-churn-cache` keyed on `HEAD_SHORT|plan_mod_epoch`. Cache format:

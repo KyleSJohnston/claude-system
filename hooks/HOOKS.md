@@ -129,37 +129,80 @@ Source with: `source "$(dirname "$0")/log.sh"`
 | `log_info <stage> <msg>` | Human-readable stderr log |
 | `log_json <stage> <msg>` | Structured JSON stderr log |
 
-### context-lib.sh — Project state detection
+### context-lib.sh — Compatibility shim (formerly the monolith)
+
+> **Architecture note:** `context-lib.sh` was a 2,221-line monolith loaded by every hook.
+> It has been decomposed into focused domain libraries for lazy loading. This file now
+> acts as a **compatibility shim** — it sources all domain libraries so that existing callers
+> (test files, `diagnose.sh`) continue to work without modification.
+>
+> **New hooks should use `require_*()` from `source-lib.sh`** — load only what they need.
+> `context-lib.sh` is safe to source directly (backward compatible), but it loads all
+> domain libraries unconditionally (no lazy loading benefit).
 
 Source with: `source "$(dirname "$0")/context-lib.sh"`
 
-| Function | Populates |
-|----------|-----------|
-| `get_git_state <root>` | `$GIT_BRANCH`, `$GIT_DIRTY_COUNT`, `$GIT_WORKTREES`, `$GIT_WT_COUNT` |
-| `get_plan_status <root>` | `$PLAN_EXISTS`, `$PLAN_PHASE`, `$PLAN_TOTAL_PHASES`, `$PLAN_COMPLETED_PHASES`, `$PLAN_IN_PROGRESS_PHASES`, `$PLAN_AGE_DAYS`, `$PLAN_COMMITS_SINCE`, `$PLAN_CHANGED_SOURCE_FILES`, `$PLAN_TOTAL_SOURCE_FILES`, `$PLAN_SOURCE_CHURN_PCT`, `$PLAN_REQ_COUNT`, `$PLAN_P0_COUNT`, `$PLAN_NOGO_COUNT` |
-| `get_session_changes <root>` | `$SESSION_CHANGED_COUNT`, `$SESSION_FILE` |
-| `get_drift_data <root>` | `$DRIFT_UNPLANNED_COUNT`, `$DRIFT_UNIMPLEMENTED_COUNT`, `$DRIFT_MISSING_DECISIONS`, `$DRIFT_LAST_AUDIT_EPOCH` |
-| `get_research_status <root>` | `$RESEARCH_EXISTS`, `$RESEARCH_ENTRY_COUNT` |
-| `is_source_file <path>` | Tests against `$SOURCE_EXTENSIONS` regex |
-| `is_skippable_path <path>` | Tests for config/test/vendor/generated paths |
-| `validate_state_file <file> <format>` | Guards against corrupt state file reads (pipe-delimited format validation) |
-| `atomic_write <file> <content>` | Write via temp-file-then-mv for state file safety (DEC-INTEGRITY-004) |
-| `safe_cleanup <target> [fallback]` | `rm -rf` with CWD safety — `cd` out first if CWD is inside target |
-| `init_trace <agent_type> <project>` | Create trace directory, manifest.json, active marker; sets `$TRACE_DIR` |
-| `finalize_trace <trace_dir> <outcome>` | Close manifest (duration, outcome, files_changed), remove active marker, append to index |
-| `write_statusline_cache <root>` | Atomic cache write for status bar enrichment (DEC-CACHE-001) |
-| `get_session_summary_context <root>` | Trajectory summary for compaction preservation |
-| `build_resume_directive <root>` | Priority-ordered actionable instruction derived from session state |
-| `compress_initiative <plan_file> <name>` | Archive completed initiative from Active to Completed Initiatives table |
-| `append_audit <root> <event> <detail>` | Appends to `.claude/.audit-log` |
+When sourced, loads all domain libraries: `core-lib.sh`, `git-lib.sh`, `plan-lib.sh`,
+`trace-lib.sh`, `session-lib.sh`, `doc-lib.sh`, and `ci-lib.sh` (if present).
+
+The functions formerly documented here are now split across domain libraries. For the
+full function reference see `ARCHITECTURE.md § 12. Shared Libraries`. Key functions:
+
+| Function | Domain Library | Populates |
+|----------|---------------|-----------|
+| `get_git_state <root>` | git-lib.sh | `$GIT_BRANCH`, `$GIT_DIRTY_COUNT`, `$GIT_WORKTREES`, `$GIT_WT_COUNT` |
+| `get_plan_status <root>` | plan-lib.sh | `$PLAN_EXISTS`, `$PLAN_PHASE`, `$PLAN_TOTAL_PHASES`, `$PLAN_SOURCE_CHURN_PCT`, `$PLAN_LIFECYCLE` |
+| `get_session_changes <root>` | session-lib.sh | `$SESSION_CHANGED_COUNT`, `$SESSION_FILE` |
+| `get_drift_data <root>` | session-lib.sh | `$DRIFT_UNPLANNED_COUNT`, `$DRIFT_UNIMPLEMENTED_COUNT`, `$DRIFT_LAST_AUDIT_EPOCH` |
+| `get_research_status <root>` | session-lib.sh | `$RESEARCH_EXISTS`, `$RESEARCH_ENTRY_COUNT` |
+| `is_source_file <path>` | core-lib.sh | Tests against `$SOURCE_EXTENSIONS` regex |
+| `is_skippable_path <path>` | core-lib.sh | Tests for config/test/vendor/generated paths |
+| `validate_state_file <file> <format>` | core-lib.sh | Guards against corrupt state file reads |
+| `atomic_write <file> <content>` | core-lib.sh | Write via temp-file-then-mv (DEC-INTEGRITY-004) |
+| `safe_cleanup <target> [fallback]` | core-lib.sh | `rm -rf` with CWD safety |
+| `init_trace <agent_type> <project>` | trace-lib.sh | Create trace directory, manifest.json, active marker |
+| `finalize_trace <trace_dir> <outcome>` | trace-lib.sh | Close manifest, remove active marker, append to index |
+| `write_statusline_cache <root>` | session-lib.sh | Atomic cache write for status bar enrichment |
+| `get_session_summary_context <root>` | session-lib.sh | Trajectory summary for compaction preservation |
+| `build_resume_directive <root>` | session-lib.sh | Priority-ordered resume instruction from session state |
+| `compress_initiative <plan_file> <name>` | plan-lib.sh | Archive completed initiative to Completed Initiatives table |
+| `append_audit <root> <event> <detail>` | core-lib.sh | Appends to `.claude/.audit-log` |
 
 `$SOURCE_EXTENSIONS` is the single source of truth for source file detection: `ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh`
 
-### source-lib.sh — Bootstrap loader
+### source-lib.sh — Bootstrap loader and lazy domain loader
 
 Source with: `source "$(dirname "$0")/source-lib.sh"`
 
-Single-file bootstrapper that sources both `log.sh` and `context-lib.sh` with correct path resolution. Used by hooks that need the full library stack in one line.
+Bootstrap loader that sources `log.sh` and `core-lib.sh`. Provides `require_*()` lazy loaders
+for domain libraries. All hooks source this file as their first dependency.
+
+**What loads immediately (667 lines total):**
+- `log.sh` (314 lines) — JSON I/O, stdin caching, path utilities
+- `core-lib.sh` (400 lines) — deny/allow/advisory output, atomic writes
+
+**What loads on demand via `require_*()`:**
+
+| Function | Library | Lines | Purpose |
+|----------|---------|-------|---------|
+| `require_git()` | `git-lib.sh` | 76 | Git state detection, branch guards, worktree safety |
+| `require_plan()` | `plan-lib.sh` | 469 | Plan lifecycle, staleness scoring, MASTER_PLAN.md parsing |
+| `require_trace()` | `trace-lib.sh` | 755 | Trace init/finalize, audit trail, agent markers |
+| `require_session()` | `session-lib.sh` | 645 | Session summary, trajectory, compaction context |
+| `require_doc()` | `doc-lib.sh` | 306 | @decision enforcement, doc-gate rules |
+| `require_ci()` | `ci-lib.sh` | 217 | CI detection, workflow helpers |
+
+Each `require_*()` is idempotent — calling `require_git()` twice is a no-op. Hooks that need
+multiple domains call them explicitly (e.g., `require_git; require_plan`). `require_all()` was
+removed in Phase 3 (dead code audit — no production hook called it).
+
+**Example hook usage:**
+```bash
+source "$(dirname "$0")/source-lib.sh"
+require_git          # only load git-lib.sh
+get_git_state "$root"
+echo "Branch: $GIT_BRANCH"
+```
 
 ### state-registry.sh — State file registry
 
@@ -480,14 +523,30 @@ Hook registration in `../settings.json` → `hooks` object:
 ## Testing
 
 ```bash
+# Run the full test suite (162 tests)
+bash tests/run-hooks.sh
+
+# Run a targeted subset with --scope (faster feedback during hook development)
+bash tests/run-hooks.sh --scope syntax       # Syntax validation + settings.json
+bash tests/run-hooks.sh --scope pre-bash     # guard.sh behavioral tests
+bash tests/run-hooks.sh --scope pre-write    # branch-guard, plan-check, doc-gate, test-gate
+bash tests/run-hooks.sh --scope post-write   # plan-validate, statusline, registry lint
+bash tests/run-hooks.sh --scope unit         # context-lib.sh unit tests
+bash tests/run-hooks.sh --scope session      # session-init, prompt-submit, compact-preserve
+bash tests/run-hooks.sh --scope integration  # settings.json sync, subagent tracking
+bash tests/run-hooks.sh --scope trace        # Trace protocol (init_trace, finalize_trace)
+bash tests/run-hooks.sh --scope gate         # Gate hook behavioral tests
+bash tests/run-hooks.sh --scope state        # State Registry Lint + Multi-Context Pass
+bash tests/run-hooks.sh --scope fixtures     # Test fixture validation
+
+# Combine multiple scopes (ORed — runs either matching section)
+bash tests/run-hooks.sh --scope unit --scope gate
+
 # PreToolUse:Write hook (consolidated)
 echo '{"tool_name":"Write","tool_input":{"file_path":"/test.ts"}}' | bash hooks/pre-write.sh
 
 # PreToolUse:Bash hook (consolidated)
 echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/pre-bash.sh
-
-# Individual gate test (via archived legacy hooks)
-echo '{"tool_name":"Write","tool_input":{"file_path":"/test.ts"}}' | bash archive/legacy-hooks/doc-gate.sh
 
 # Validate settings.json
 python3 -m json.tool ../settings.json
@@ -497,4 +556,15 @@ tail -20 ../.claude/.audit-log
 
 # Check test gate status
 cat <project>/.claude/.test-status
+
+# Analyze hook performance (parses .hook-timing.log)
+bash scripts/hook-timing-report.sh
 ```
+
+### --scope Feature
+
+The `--scope` flag targets specific test sections to reduce feedback time during
+development. Full suite takes 45–90s; a single scope typically completes in <15s.
+
+Multiple `--scope` flags are ORed — `--scope unit --scope syntax` runs both sections.
+No `--scope` flag runs all tests (backward-compatible default for CI).
