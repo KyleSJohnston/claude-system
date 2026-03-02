@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `feature/fix-bootstrap-amendment`: Bootstrap vs amendment flow — hooks now detect whether MASTER_PLAN.md is already tracked and only permit first-time creation on main; amendments route through worktrees
+
 ### Changed
 - `feature/statusline-rendering`: Statusline rendering overhaul — domain-clustered labels (`dirty:`, `wt:`, `agents:`, `todos:`), aggregate token segment with K/M notation, `~$` cost prefix; +12 new tests (39 total dedicated)
 - `feature/statusline-redesign`: Two-line status HUD — line 1 shows project context (model, workspace, dirty files, worktrees, agents, todos), line 2 shows session metrics (context window bar, cost, duration, lines changed, cache efficiency); removed plan phase, test status, community segment, version, and stale worktree detection from statusline; 26 new dedicated tests
