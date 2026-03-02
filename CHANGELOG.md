@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `feature/statusline-redesign`: Two-line status HUD — line 1 shows project context (model, workspace, dirty files, worktrees, agents, todos), line 2 shows session metrics (context window bar, cost, duration, lines changed, cache efficiency); removed plan phase, test status, community segment, version, and stale worktree detection from statusline; 26 new dedicated tests
 
 ### Fixed
+- `feature/fix-comment-false-positive`: Strip bash comments from `_stripped_cmd` in pre-bash.sh — prevents false-positive guard denials when agent-generated comments mention git keywords like "git commit"; adds Tests 14-15 for regression coverage (DEC-GUARD-002)
 - `feature/autoverify-race-fix`: Auto-verify race condition — `.active-autoverify-*` markers protect the `proof-status = verified` window between auto-verify write and Guardian dispatch, preventing `post-write.sh` from invalidating the status (#56)
 - `feature/proof-lifecycle`: Proof lifecycle reliability — detect_project_root() reads .cwd from HOOK_INPUT, write_proof_status() pre-creates guardian marker + state.json dual-write, post-task.sh emits DISPATCH TESTER NOW after implementer, prompt-submit.sh emits DISPATCH GUARDIAN NOW on verification; new state-lib.sh coordination layer; 11 new tests
 
