@@ -849,6 +849,15 @@ fi
 rm -f "${CLAUDE_DIR}/.prompt-count-"*
 rm -f "${CLAUDE_DIR}/.session-start-epoch"
 rm -f "${CLAUDE_DIR}/.subagent-tracker"
+
+# --- Proof-epoch initialization ---
+# Touch .proof-epoch at session start to mark the epoch boundary for lattice resets.
+# write_proof_status() in log.sh compares .proof-epoch mtime against .proof-status mtime:
+# if epoch is newer, a lattice regression (e.g., verified→pending) is allowed as a
+# clean-session reset. Without this touch, epoch mtime predates any proof-status written
+# in a previous session, and the lattice would reject the reset.
+# The 2>/dev/null || true suppresses errors if CLAUDE_DIR is read-only (graceful degradation).
+touch "${CLAUDE_DIR}/.proof-epoch" 2>/dev/null || true
 # Prune orphaned session-scoped tracker files from crashed sessions.
 # Each tracker is named .subagent-tracker-<SESSION_ID_or_PID>.
 # If the PID portion is numeric and the process is dead, the file is stale.

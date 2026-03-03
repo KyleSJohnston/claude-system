@@ -88,6 +88,38 @@ project_hash() {
     echo "${1:?project_hash requires a path argument}" | shasum -a 256 | cut -c1-8
 }
 
+# --- Protected State Files Registry ---
+# @decision DEC-STATE-REGISTRY-001
+# @title _PROTECTED_STATE_FILES array for centralized write-guard enforcement
+# @status accepted
+# @rationale Gate 0 in pre-write.sh originally used inline pattern matching
+#   (*proof-status* || *test-status*) to detect protected files. As the state
+#   management system grew (adding .proof-epoch, .state.lock, .proof-status.lock),
+#   this inline list would need to be updated in every gate that references it.
+#   The registry pattern centralizes the list in core-lib.sh (always-loaded),
+#   making is_protected_state_file() available to any hook without duplication.
+#   New protected files need only be added here — all gates update automatically.
+_PROTECTED_STATE_FILES=(
+    ".proof-status"
+    ".test-status"
+    ".proof-epoch"
+    ".state.lock"
+    ".proof-status.lock"
+)
+
+# is_protected_state_file FILEPATH
+#   Returns 0 if the file basename matches any protected state file pattern.
+#   Uses prefix matching (e.g., ".proof-status.lock" matches ".proof-status").
+#   Usage: is_protected_state_file "/some/path/.proof-status" && emit_deny "..."
+is_protected_state_file() {
+    local filepath="$1"
+    local basename="${filepath##*/}"
+    for pattern in "${_PROTECTED_STATE_FILES[@]}"; do
+        [[ "$basename" == $pattern* ]] && return 0
+    done
+    return 1
+}
+
 # --- Constants ---
 # Single source of truth for thresholds and patterns across all hooks.
 # DECISION: Consolidated constants. Rationale: Magic numbers duplicated across
@@ -444,7 +476,8 @@ _lock_fd() {
 # Export core utilities for subshells
 export SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
 export STOP_SURFACE_TTL STOP_TODO_TTL STOP_BACKUP_TTL
+export _PROTECTED_STATE_FILES
 export -f project_hash is_source_file is_skippable_path is_test_file is_claude_meta_repo
 export -f read_test_status validate_state_file atomic_write safe_cleanup append_audit _log_deny
 export -f declare_gate emit_deny emit_advisory emit_flush enable_fail_closed _hook_crash_deny
-export -f cache_project_context _lock_fd
+export -f cache_project_context _lock_fd is_protected_state_file
