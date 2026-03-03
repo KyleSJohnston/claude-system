@@ -296,6 +296,8 @@ Two paths converge here:
      - Dispatch 2: W2-3, W2-4, W2-5 (new scripts + tests, ~3 files)
      ```
 
+7. **Integration specification**: For each work item, specify the `**Integration:**` field — which existing files must import/source/call the new code, and which registries (settings.json, SKILL.md, router, etc.) must be updated. This enables the implementer, tester, and guardian to verify integration independently.
+
 ### Phase 4: MASTER_PLAN.md Generation
 
 #### Workflow A — Full Document (New Project)

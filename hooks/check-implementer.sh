@@ -347,6 +347,53 @@ if [[ -n "$TRACE_ID" && -d "$TRACE_DIR" ]]; then
     done
 fi
 
+# Check 7: Integration wiring — new files must have inbound references
+# For each new file in the worktree, verify at least one existing file references it.
+# This catches the "built but not wired" pattern where components pass all tests
+# but are never imported/sourced/called from existing code.
+#
+# @decision DEC-IWIRE-001
+# @title Mechanical inbound-reference gate for new files
+# @status accepted
+# @rationale Every other gate (implementer checklist, tester Phase 2.5, guardian checklist)
+#   relies on agent compliance. This mechanical check runs automatically in check-implementer.sh
+#   and surfaces unwired files in the system-reminder regardless of agent behavior.
+if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
+    # Build list of new files: either from files-changed.txt + git diff-filter, or from git directly
+    UNWIRED_COUNT=0
+    UNWIRED_FILES=""
+    _NEW_FILES=""
+    if [[ -n "$PROJECT_ROOT" ]]; then
+        _NEW_FILES=$(git -C "$PROJECT_ROOT" log main..HEAD --diff-filter=A --name-only --format="" 2>/dev/null | sort -u || echo "")
+    fi
+    if [[ -n "$_NEW_FILES" ]]; then
+        while IFS= read -r new_file; do
+            [[ -z "$new_file" ]] && continue
+            # Only check source files, skip tests and config
+            _full_path="$PROJECT_ROOT/$new_file"
+            [[ ! -f "$_full_path" ]] && continue
+
+            BASENAME=$(basename "$new_file")
+            # Skip test files — they are consumers, not producers
+            [[ "$BASENAME" == test-* || "$BASENAME" == *_test.* || "$BASENAME" == *.test.* ]] && continue
+
+            # Check: does any OTHER file reference this file?
+            REF_COUNT=$(grep -rl "$BASENAME" "$PROJECT_ROOT" \
+                --include='*.sh' --include='*.md' --include='*.json' --include='*.py' --include='*.js' --include='*.ts' \
+                2>/dev/null | grep -v "$new_file" | grep -vc "test" || echo "0")
+
+            if [[ "$REF_COUNT" -eq 0 ]]; then
+                ((UNWIRED_COUNT++)) || true
+                UNWIRED_FILES+="  - $BASENAME (0 inbound references)\n"
+            fi
+        done <<< "$_NEW_FILES"
+    fi
+
+    if [[ "$UNWIRED_COUNT" -gt 0 ]]; then
+        ISSUES+=("$UNWIRED_COUNT new file(s) have zero inbound references (potential dead code):\n$UNWIRED_FILES")
+    fi
+fi
+
 # Response size advisory
 if [[ -n "$RESPONSE_TEXT" ]]; then
     WORD_COUNT=$(echo "$RESPONSE_TEXT" | wc -w | tr -d ' ')
