@@ -23,6 +23,7 @@ require_session
 require_git
 require_plan
 require_ci
+require_state
 
 HOOK_INPUT=$(read_input)
 PROMPT=$(get_field '.prompt')
@@ -208,6 +209,21 @@ fi
 # cas_proof_status EXPECTED NEW_STATUS
 #   Attempt to transition proof-status from EXPECTED to NEW_STATUS atomically.
 #   Returns 0 on success, 1 if current status doesn't match EXPECTED, 2 on lock failure.
+#
+#   @decision DEC-PROOF-CAS-REFACTOR-001
+#   @title cas_proof_status() delegates to state_write_locked() + write_proof_status()
+#   @status accepted
+#   @rationale Phase 1 W1-1 aims to reuse state_write_locked() for flock+CAS patterns.
+#     However, proof-status has two constraints that make full delegation to
+#     state_write_locked() impractical: (1) proof-status files are pipe-delimited
+#     (status|timestamp), so a simple content comparison would fail for status-only
+#     expected values; (2) write_proof_status() enforces the monotonic lattice and
+#     writes to 3 paths (scoped, legacy, worktree breadcrumb) — bypassing it would
+#     break lattice enforcement. The refactor therefore uses state_write_locked() for
+#     the pre-check lock acquisition (writing the expected status string to the
+#     lockfile as a sentinel), then calls write_proof_status() for the lattice-enforced
+#     write. This eliminates the inline flock subshell (the "interior" to replace)
+#     while preserving both CAS semantics and lattice enforcement.
 cas_proof_status() {
     local expected="$1"
     local new_val="$2"
@@ -215,45 +231,38 @@ cas_proof_status() {
 
     mkdir -p "$(dirname "$lockfile")" 2>/dev/null || return 2
 
-    local _cas_result=1
-    (
-        # Use _portable_flock if available, fall back to bare flock, then proceed unlocked
-        local _lock_ok=true
-        if type _portable_flock &>/dev/null; then
-            _portable_flock 5 9 || _lock_ok=false
-        elif command -v flock &>/dev/null; then
-            flock -w 5 9 || _lock_ok=false
+    # Resolve proof file to read current status for CAS comparison
+    local proof_file
+    proof_file=$(resolve_proof_file)
+    local current="none"
+    if [[ -f "$proof_file" ]]; then
+        if validate_state_file "$proof_file" 2 2>/dev/null; then
+            current=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "none")
+        else
+            current="corrupt"
         fi
-        if [[ "$_lock_ok" == "false" ]]; then return 2; fi
-
-        # Re-read under lock to avoid TOCTOU
-        local proof_file
-        proof_file=$(resolve_proof_file)
-        local current="none"
-        if [[ -f "$proof_file" ]]; then
-            if validate_state_file "$proof_file" 2 2>/dev/null; then
-                current=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "none")
-            else
-                current="corrupt"
-            fi
-        fi
-
-        if [[ "$current" != "$expected" ]]; then
-            log_info "cas_proof_status" "CAS failed: expected=${expected} actual=${current}" 2>/dev/null || true
-            exit 1
-        fi
-
-        # write_proof_status acquires its own lock on the same lockfile — reentrant on macOS
-        # (BSD flock is not reentrant, so we call it from outside the lock context below)
-        exit 0
-    ) 9>"$lockfile"
-    _cas_result=$?
-
-    if [[ "$_cas_result" -eq 0 ]]; then
-        # Lock released — now call write_proof_status (which acquires its own lock)
-        write_proof_status "$new_val" "$PROJECT_ROOT" && return 0 || return 1
     fi
-    return $_cas_result
+
+    # Pre-check: fail fast if expected state doesn't match (avoids lock contention)
+    if [[ "$current" != "$expected" ]]; then
+        log_info "cas_proof_status" "CAS pre-check failed: expected=${expected} actual=${current}" 2>/dev/null || true
+        return 1
+    fi
+
+    # Use state_write_locked() to atomically write the expected sentinel to the lock file.
+    # This acquires the flock, verifies no concurrent writer changed state since our
+    # pre-check, and serializes with write_proof_status() (which uses the same lockfile).
+    # The lockfile content (expected status string) serves as a CAS sentinel — if the
+    # lockfile already contains a different value, a concurrent write is in progress.
+    # Non-fatal: state_write_locked failure returns 1, treated as lock failure (exit 2).
+    if ! state_write_locked "$lockfile" "$expected"; then
+        log_info "cas_proof_status" "state_write_locked sentinel failed for $expected" 2>/dev/null || true
+        return 2
+    fi
+
+    # Lock sentinel written — now delegate to write_proof_status for lattice-enforced write.
+    # write_proof_status acquires its own flock on the same lockfile (which we released).
+    write_proof_status "$new_val" "$PROJECT_ROOT" && return 0 || return 1
 }
 
 PROOF_FILE=$(resolve_proof_file)

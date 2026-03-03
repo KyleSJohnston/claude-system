@@ -92,6 +92,7 @@ _print_scope_usage() {
     echo "  todo        — todo.sh backlog script unit tests"
     echo "  scan        — scan-backlog.sh debt marker scanner unit tests"
     echo "  gaps        — gaps-report.sh accountability report unit tests"
+    echo "  concurrency — Concurrency and state management tests (Phase 1 locking, CAS, lattice, registry)"
     echo "  bash32      — Bash 3.2 compatibility (no declare -A in hooks)"
     echo ""
     echo "No --scope = run all tests (default, backward compatible)."
@@ -139,6 +140,7 @@ _scope_pattern() {
         todo)        echo "todo\.sh" ;;
         scan)        echo "scan-backlog\.sh" ;;
         gaps)        echo "gaps-report\.sh" ;;
+        concurrency) echo "Concurrency and state management" ;;
         bash32)      echo "Bash 3\.2 compatibility" ;;
         *)           echo "" ;;
     esac
@@ -2722,6 +2724,32 @@ safe_cleanup "$_GAPS_MOCK_DIR" "$SCRIPT_DIR"
 
 echo ""
 fi # end: gaps-report.sh
+
+# =============================================================================
+# --- Test: Concurrency and state management tests ---
+# Validates Phase 1 locking and CAS mechanisms:
+#   state_write_locked() CAS, _lock_fd timeout, write_proof_status() lattice,
+#   is_protected_state_file() registry, Gate 0 denial for registry-protected files.
+# =============================================================================
+if should_run_section "Concurrency and state management"; then
+echo ""
+echo "--- Concurrency and state management (Phase 1) ---"
+CONCURRENCY_TEST="$SCRIPT_DIR/test-concurrency.sh"
+
+if [[ -f "$CONCURRENCY_TEST" ]]; then
+    if bash "$CONCURRENCY_TEST" 2>/dev/null; then
+        pass "test-concurrency.sh — all 12 concurrency tests passed"
+    else
+        fail "test-concurrency.sh" "one or more concurrency tests failed (run directly for details)"
+        failed=$((failed + 1))
+    fi
+else
+    fail "test-concurrency.sh" "test file not found at $CONCURRENCY_TEST"
+    failed=$((failed + 1))
+fi
+
+echo ""
+fi # end: concurrency
 
 # --- Test: Bash 3.2 compatibility — no declare -A in hooks ---
 # Prevents regressions: macOS ships bash 3.2 which silently ignores declare -A.
