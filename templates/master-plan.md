@@ -109,6 +109,7 @@ project's institutional memory.
 **WN-1: [Task title] (#issue)**
 - [Specific implementation details]
 - [File locations, line numbers if known]
+- **Integration:** [Which existing file(s) must import/call this. Which registry must be updated.]
 
 ##### Critical Files
 - `path/to/key-file.ext` — [why this file is central to this phase]

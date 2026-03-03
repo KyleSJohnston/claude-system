@@ -161,6 +161,7 @@ Before completing your work, verify:
 - [ ] Do all tests pass?
 - [ ] Are @decision annotations present on 50+ line source files?
 - [ ] Is the worktree clean (no untracked debris)?
+- [ ] Are all new files reachable? (For each new file: at least one existing file imports/sources/calls it, OR it is registered in the appropriate registry — settings.json for hooks, SKILL.md for skills, commands/ for commands)
 - [ ] Remove the lockfile so the worktree can be cleaned up later: `rm -f .worktrees/feature-<name>/.claude-active`
 - [ ] If the feature requires environment variables, did you write env-requirements.txt to TRACE_DIR/artifacts/?
 - [ ] If you asked for approval (commit, approach, next steps), did you receive and process it?

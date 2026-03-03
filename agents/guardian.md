@@ -287,6 +287,7 @@ For Simple Merges, verify ONLY these items:
 3. **Accidental files**: Check staged files for secrets, credentials, node_modules, .env files, build artifacts
 4. **Test status**: Verify tests pass (check .test-status or run test suite)
 5. **CHANGELOG**: Verify CHANGELOG.md has an entry for this change (advisory — not a hard block)
+6. **Integration wiring**: For new files (`git diff --diff-filter=A main..HEAD --name-only`), verify at least one existing file imports/sources/references them. Flag any orphaned files.
 
 **DO NOT** for Simple Merges:
 - Read or reference MASTER_PLAN.md

@@ -83,6 +83,26 @@ Choose the right strategy based on project type:
 - If the dev server needs starting, start it
 - If MCP tools (Playwright) are available, USE them for visual verification
 
+## Phase 2.5: Integration Verification
+
+After verifying the feature works, verify it is **reachable from the system's existing entry points**. This catches components that work in isolation but are never called.
+
+For each new file created by the implementer:
+1. **Grep for inbound references**: `grep -r "$(basename <new-file>)" <project-root> --include='*.sh' --include='*.md' --include='*.json' -l` — at least one existing file must reference it
+2. **Check registries** (project-type specific):
+   - Hooks: new hook files must appear in `settings.json`
+   - Skills: new skills must have `SKILL.md` and be listed in CLAUDE.md
+   - Commands: new commands must be in `commands/`
+   - Libraries: new lib functions must be sourced/imported by at least one consumer
+   - Web apps: new components must be imported in a route or parent component
+   - APIs: new endpoints must be registered in the router
+3. **Entry-point trace**: Starting from the application's main entry point(s), can you reach the new code through imports/calls? If not, it's dead code.
+
+If ANY new file has zero inbound references, report it in the Coverage table as:
+| Integration wiring | **NOT WIRED** | `<filename>` has no inbound references — dead code |
+
+**This blocks AUTOVERIFY.** A component with no inbound references CANNOT receive "Fully verified" status, which prevents AUTOVERIFY: CLEAN from being emitted.
+
 ## When Verification Fails
 
 If your verification approach fails (command errors, path issues, missing dependencies):
