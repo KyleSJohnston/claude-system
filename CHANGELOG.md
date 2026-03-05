@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `feature/fix-bootstrap-paradox`: Bootstrap paradox mitigation — M1: CAS failure diagnostic counter in prompt-submit.sh warns orchestrator after 2+ consecutive cas_proof_status failures (detects broken gate infrastructure); M2: @plan-update/@no-source annotations bypass proof-status gate in task-track.sh for documentation-only merges; 8 new bootstrap mitigation tests (DEC-BOOTSTRAP-PARADOX-001, DEC-BOOTSTRAP-PARADOX-002, DEC-BOOTSTRAP-TEST-001) (#105)
 - `feature/fix-proof-status-accumulation`: Prevent .proof-status-* dotfile accumulation — _SHA256_CMD init guard in core-lib.sh (Bug A), trailing-slash normalization in get_claude_dir() (Bug B), 4h TTL sweep of stale proof files in session-end.sh (Bug C), post-read cleanup after outcome derivation (Bug D), legacy double-nested path removal (Bug E); 4 new proof-cleanup tests (DEC-SHA256-INIT-001, DEC-PROOF-SWEEP-001)
 - `worktree-agent-af02ba8c`: Statusline term_w clamping — COLUMNS < 80 now clamps to 120 instead of aggressive responsive dropping; lets Claude Code UI handle final clipping (DEC-STATUSLINE-TERMWIDTH-002)
 - `feature/fix-guardian-double-ask`: Include AUTO-VERIFY-APPROVED in manual approval dispatch so Guardian skips its Interactive Approval Protocol when user has already approved via prompt-submit.sh gate; added "Manual Approval Fast Path" documentation to DISPATCH.md
