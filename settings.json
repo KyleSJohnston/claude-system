@@ -65,6 +65,7 @@
       "Write",
       "Edit",
       "Task",
+      "Agent",
       "NotebookEdit",
       "mcp__context7__resolve-library-id",
       "mcp__context7__query-docs",
@@ -131,7 +132,7 @@
         ]
       },
       {
-        "matcher": "Task",
+        "matcher": "Task|Agent",
         "hooks": [
           {
             "type": "command",
