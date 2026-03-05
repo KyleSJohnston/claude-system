@@ -340,12 +340,14 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
         fi
     fi
 
-    # Gate C.2: Activate proof gate — creates .proof-status-{phash} = needs-verification.
+    # Gate C.2: Activate proof gate — creates state/{phash}/proof-status = needs-verification.
     # This activates Gate A, blocking Guardian until verification completes.
     # Writes to project-scoped file to prevent cross-project contamination.
+    # Check both new and old locations to avoid double-initialization during migration.
     _PHASH=$(project_hash "$PROJECT_ROOT")
-    PROOF_FILE="${CLAUDE_DIR}/.proof-status-${_PHASH}"
-    if [[ ! -f "$PROOF_FILE" ]]; then
+    _NEW_PROOF="${CLAUDE_DIR}/state/${_PHASH}/proof-status"
+    _OLD_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
+    if [[ ! -f "$_NEW_PROOF" && ! -f "$_OLD_PROOF" ]]; then
         write_proof_status "needs-verification" "$PROJECT_ROOT"
     fi
 fi

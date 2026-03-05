@@ -36,6 +36,8 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
     require_state
     PROJECT_ROOT=$(detect_project_root)
     CLAUDE_DIR=$(get_claude_dir)
+    _STATE_DIR="${CLAUDE_DIR}/state/$(project_hash "$PROJECT_ROOT")"
+    mkdir -p "$_STATE_DIR" 2>/dev/null || true
 
     # --- cas_proof_status (hoisted for fast path access) ---
     # cas_proof_status EXPECTED NEW_STATUS
@@ -52,7 +54,10 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
     cas_proof_status() {
         local expected="$1"
         local new_val="$2"
-        local lockfile="${CLAUDE_DIR}/.proof-status.lock"
+        # New lock path: state/locks/proof.lock
+        local locks_dir="${CLAUDE_DIR}/state/locks"
+        mkdir -p "$locks_dir" 2>/dev/null || true
+        local lockfile="${locks_dir}/proof.lock"
         local proof_file
         proof_file=$(resolve_proof_file)
 
@@ -99,11 +104,22 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
             # Write directly — we hold the lock that write_proof_status would acquire
             local timestamp; timestamp=$(date +%s)
             printf '%s\n' "${new_val}|${timestamp}" > "${proof_file}.tmp" && mv "${proof_file}.tmp" "$proof_file"
+            # Dual-write to other location (migration period)
+            local phash; phash=$(project_hash "$PROJECT_ROOT")
+            local _state_proof="${CLAUDE_DIR}/state/${phash}/proof-status"
+            local _old_proof="${CLAUDE_DIR}/.proof-status-${phash}"
+            if [[ "$proof_file" == *"/state/"* ]]; then
+                # proof_file is new path — also write old
+                printf '%s\n' "${new_val}|${timestamp}" > "${_old_proof}.tmp" && mv "${_old_proof}.tmp" "$_old_proof"
+            else
+                # proof_file is old path — also write new
+                mkdir -p "$(dirname "$_state_proof")"
+                printf '%s\n' "${new_val}|${timestamp}" > "${_state_proof}.tmp" && mv "${_state_proof}.tmp" "$_state_proof"
+            fi
             # Pre-create guardian marker (same as write_proof_status)
             if [[ "$new_val" == "verified" ]]; then
                 local trace_store="${TRACE_STORE:-$HOME/.claude/traces}"
                 local session="${CLAUDE_SESSION_ID:-$$}"
-                local phash; phash=$(project_hash "$PROJECT_ROOT")
                 echo "pre-verified|${timestamp}" > "${trace_store}/.active-guardian-${session}-${phash}" 2>/dev/null || true
             fi
             log_info "cas_proof_status" "CAS succeeded: ${expected} → ${new_val}" 2>/dev/null || true
@@ -116,7 +132,11 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
     }
 
     # Check for .proof-gate-pending breadcrumb from interrupted previous attempt
-    _GATE_PENDING="${CLAUDE_DIR}/.proof-gate-pending"
+    # Check new state dir location first, fall back to old dotfile
+    _GATE_PENDING="${_STATE_DIR}/proof-gate-pending"
+    if [[ ! -f "$_GATE_PENDING" ]]; then
+        _GATE_PENDING="${CLAUDE_DIR}/.proof-gate-pending"
+    fi
     if [[ -f "$_GATE_PENDING" ]]; then
         _GATE_TS=$(cat "$_GATE_PENDING" 2>/dev/null || echo "0")
         [[ "$_GATE_TS" =~ ^[0-9]+$ ]] || _GATE_TS=0
@@ -124,7 +144,7 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
         _GATE_AGE=$(( _NOW - _GATE_TS ))
         if [[ "$_GATE_AGE" -gt 3 ]]; then
             # Previous verification was interrupted — clean up, user is retrying
-            rm -f "$_GATE_PENDING" 2>/dev/null || true
+            rm -f "${_STATE_DIR}/proof-gate-pending" "${CLAUDE_DIR}/.proof-gate-pending" 2>/dev/null || true
         fi
     fi
 
@@ -136,13 +156,13 @@ if [[ -n "$PROMPT" ]] && echo "$PROMPT" | grep -qiE '\bverified\b|\bapproved?\b|
             CURRENT_STATUS=""  # corrupt — skip approval transition
         fi
         if [[ "$CURRENT_STATUS" == "pending" || "$CURRENT_STATUS" == "needs-verification" ]]; then
-            # Write breadcrumb before CAS attempt
-            date +%s > "${CLAUDE_DIR}/.proof-gate-pending" 2>/dev/null || true
+            # Write breadcrumb before CAS attempt (new state dir location)
+            date +%s > "${_STATE_DIR}/proof-gate-pending" 2>/dev/null || true
 
             if cas_proof_status "$CURRENT_STATUS" "verified"; then
                 # Success — remove breadcrumb, reset CAS failure counter, emit dispatch
-                rm -f "${CLAUDE_DIR}/.proof-gate-pending" 2>/dev/null || true
-                rm -f "${CLAUDE_DIR}/.cas-failures" 2>/dev/null || true
+                rm -f "${_STATE_DIR}/proof-gate-pending" "${CLAUDE_DIR}/.proof-gate-pending" 2>/dev/null || true
+                rm -f "${_STATE_DIR}/cas-failures" "${CLAUDE_DIR}/.cas-failures" 2>/dev/null || true
                 cat <<EOFVERIFY
 {
   "hookSpecificOutput": {
@@ -154,7 +174,7 @@ EOFVERIFY
                 exit 0
             else
                 # CAS failed — remove breadcrumb and fall through
-                rm -f "${CLAUDE_DIR}/.proof-gate-pending" 2>/dev/null || true
+                rm -f "${_STATE_DIR}/proof-gate-pending" "${CLAUDE_DIR}/.proof-gate-pending" 2>/dev/null || true
                 # --- M1: CAS failure diagnostic counter ---
                 # @decision DEC-BOOTSTRAP-PARADOX-001
                 # @title CAS failure counter warns after repeated verification failures
@@ -165,7 +185,8 @@ EOFVERIFY
                 #   The counter file format: count|expected|new_val|timestamp. On success, it
                 #   is deleted. Warns after 2+ failures so the orchestrator can take action.
                 #   Fixes bootstrap paradox symptom from Phase 2 merge. See #105.
-                _CAS_FAIL_FILE="${CLAUDE_DIR}/.cas-failures"
+                # Use new state dir location with migration fallback for cas-failures
+                _CAS_FAIL_FILE="${_STATE_DIR}/cas-failures"
                 _CAS_FAIL_COUNT=1
                 _CAS_PREV_EXP=""
                 _CAS_PREV_NEW=""
@@ -174,6 +195,14 @@ EOFVERIFY
                     _CAS_PREV_EXP=$(cut -d'|' -f2 "$_CAS_FAIL_FILE" 2>/dev/null || echo "")
                     _CAS_PREV_NEW=$(cut -d'|' -f3 "$_CAS_FAIL_FILE" 2>/dev/null || echo "")
                     # Only increment if same transition (same expected+new_val)
+                    if [[ "$_CAS_PREV_EXP" == "$CURRENT_STATUS" && "$_CAS_PREV_NEW" == "verified" ]]; then
+                        _CAS_FAIL_COUNT=$(( _CAS_PREV_COUNT + 1 ))
+                    fi
+                elif [[ -f "${CLAUDE_DIR}/.cas-failures" ]]; then
+                    # Migration fallback: read from old location
+                    _CAS_PREV_COUNT=$(cut -d'|' -f1 "${CLAUDE_DIR}/.cas-failures" 2>/dev/null || echo "0")
+                    _CAS_PREV_EXP=$(cut -d'|' -f2 "${CLAUDE_DIR}/.cas-failures" 2>/dev/null || echo "")
+                    _CAS_PREV_NEW=$(cut -d'|' -f3 "${CLAUDE_DIR}/.cas-failures" 2>/dev/null || echo "")
                     if [[ "$_CAS_PREV_EXP" == "$CURRENT_STATUS" && "$_CAS_PREV_NEW" == "verified" ]]; then
                         _CAS_FAIL_COUNT=$(( _CAS_PREV_COUNT + 1 ))
                     fi
@@ -225,6 +254,8 @@ fi
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(detect_project_root)}"
 CLAUDE_DIR="${CLAUDE_DIR:-$(get_claude_dir)}"
+# Compute state dir for per-project state file lookups in main body
+_STATE_DIR_MAIN="${CLAUDE_DIR}/state/$(project_hash "$PROJECT_ROOT")"
 CONTEXT_PARTS=()
 
 # --- Check for orphaned .proof-gate-pending breadcrumb from interrupted verification ---
@@ -235,7 +266,9 @@ CONTEXT_PARTS=()
 #   feedback. The breadcrumb (.proof-gate-pending) is written before CAS and removed
 #   after success or fall-through. If it persists >3s, the next hook invocation warns
 #   the user to retry. Fixes the silent-failure symptom of #104.
-_GATE_PENDING_CHECK="${CLAUDE_DIR}/.proof-gate-pending"
+# Check new state dir location first, fall back to old dotfile
+_GATE_PENDING_CHECK="${_STATE_DIR_MAIN}/proof-gate-pending"
+[[ ! -f "$_GATE_PENDING_CHECK" ]] && _GATE_PENDING_CHECK="${CLAUDE_DIR}/.proof-gate-pending"
 if [[ -f "$_GATE_PENDING_CHECK" ]]; then
     _GATE_TS_CHECK=$(cat "$_GATE_PENDING_CHECK" 2>/dev/null || echo "0")
     [[ "$_GATE_TS_CHECK" =~ ^[0-9]+$ ]] || _GATE_TS_CHECK=0
@@ -243,7 +276,7 @@ if [[ -f "$_GATE_PENDING_CHECK" ]]; then
     _GATE_AGE_CHECK=$(( _NOW_CHECK - _GATE_TS_CHECK ))
     if [[ "$_GATE_AGE_CHECK" -gt 3 ]]; then
         CONTEXT_PARTS+=("WARNING: A previous verification attempt was interrupted. Please type 'approved' again.")
-        rm -f "$_GATE_PENDING_CHECK" 2>/dev/null || true
+        rm -f "$_GATE_PENDING_CHECK" "${CLAUDE_DIR}/.proof-gate-pending" 2>/dev/null || true
     fi
 fi
 
@@ -254,10 +287,12 @@ fi
 # @rationale When cas_proof_status fails 2+ consecutive times for the same
 #   transition, the gate infrastructure itself may be broken (e.g., a fix
 #   to cas_proof_status is on a branch while old broken code runs on main).
-#   The counter file (${CLAUDE_DIR}/.cas-failures) is written by the fast-path
-#   on CAS failure and deleted on success. This main-body check injects the
-#   warning into CONTEXT_PARTS so the orchestrator sees it. Fixes #105.
-_CAS_FAIL_CHECK="${CLAUDE_DIR}/.cas-failures"
+#   The counter file is written by the fast-path on CAS failure and deleted on
+#   success. This main-body check injects the warning into CONTEXT_PARTS so the
+#   orchestrator sees it. Fixes #105.
+# Check new state dir location first, fall back to old dotfile
+_CAS_FAIL_CHECK="${_STATE_DIR_MAIN}/cas-failures"
+[[ ! -f "$_CAS_FAIL_CHECK" ]] && _CAS_FAIL_CHECK="${CLAUDE_DIR}/.cas-failures"
 if [[ -f "$_CAS_FAIL_CHECK" ]]; then
     _CAS_WARN_COUNT=$(cut -d'|' -f1 "$_CAS_FAIL_CHECK" 2>/dev/null || echo "0")
     _CAS_WARN_EXP=$(cut -d'|' -f2 "$_CAS_FAIL_CHECK" 2>/dev/null || echo "unknown")

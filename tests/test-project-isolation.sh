@@ -231,10 +231,12 @@ else
 fi
 
 # Project A should resolve to its own canonical scoped path
+# RSM Phase 3: resolve_proof_file() returns state/{phash}/proof-status (new canonical)
+# when neither new nor old path file exists.
 export PROJECT_ROOT="$PROJECT_A"
 PROOF_A=$(resolve_proof_file)
 assert_eq "Project A resolves to its own scoped canonical path" \
-    "${CLAUDE_DIR}/.proof-status-${PHASH_A}" "$PROOF_A"
+    "${CLAUDE_DIR}/state/${PHASH_A}/proof-status" "$PROOF_A"
 
 teardown_test_env
 
@@ -475,9 +477,11 @@ echo "needs-verification|$(date +%s)" > "${CLAUDE_DIR}/.proof-status"
 export PROJECT_ROOT="$PROJECT_A"
 PROOF=$(resolve_proof_file)
 
-# New behavior: always returns the scoped path, never the legacy unscoped file
-assert_eq "Single canonical path: always returns scoped .proof-status-{phash}" \
-    "${CLAUDE_DIR}/.proof-status-${PHASH_A}" "$PROOF"
+# RSM Phase 3: resolve_proof_file() returns new state/{phash}/proof-status path
+# when neither new path nor old .proof-status-{phash} file exists.
+# The legacy unscoped .proof-status file is still ignored (pre-Phase-3 behavior maintained).
+assert_eq "Single canonical path: returns new state/{phash}/proof-status when neither exists" \
+    "${CLAUDE_DIR}/state/${PHASH_A}/proof-status" "$PROOF"
 
 teardown_test_env
 

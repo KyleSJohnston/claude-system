@@ -193,7 +193,23 @@ resolve_proof_file() {
     phash=$(project_hash "$project_root")
     # Diagnostic: log which root was used so hash mismatches can be diagnosed
     echo "resolve_proof_file: root=${project_root} phash=${phash}" >&2
-    echo "${claude_dir}/.proof-status-${phash}"
+
+    # New path: state/{phash}/proof-status
+    local new_path="${claude_dir}/state/${phash}/proof-status"
+    if [[ -f "$new_path" ]]; then
+        echo "$new_path"
+        return 0
+    fi
+
+    # Old path: .proof-status-{phash} (migration fallback)
+    local old_path="${claude_dir}/.proof-status-${phash}"
+    if [[ -f "$old_path" ]]; then
+        echo "$old_path"
+        return 0
+    fi
+
+    # Neither exists — return new path (where new writes go)
+    echo "$new_path"
 }
 
 # write_proof_status — atomically write a proof status to the canonical proof-status file.
@@ -249,7 +265,10 @@ write_proof_status() {
     claude_dir=$(PROJECT_ROOT="$project_root" get_claude_dir)
     local phash
     phash=$(project_hash "$project_root")
-    local lockfile="${claude_dir}/.proof-status.lock"
+    # New lock path: state/locks/proof.lock
+    local locks_dir="${claude_dir}/state/locks"
+    mkdir -p "$locks_dir" 2>/dev/null || true
+    local lockfile="${locks_dir}/proof.lock"
 
     mkdir -p "$claude_dir" 2>/dev/null || return 1
 
@@ -279,12 +298,19 @@ write_proof_status() {
                 *)                    echo 0 ;;
             esac
         }
-        local scoped_proof="${claude_dir}/.proof-status-${phash}"
 
-        # Read current status from canonical scoped proof
+        # New canonical path: state/{phash}/proof-status
+        local state_dir_path="${claude_dir}/state/${phash}"
+        local new_proof="${state_dir_path}/proof-status"
+        # Old path for backward compat during migration
+        local old_proof="${claude_dir}/.proof-status-${phash}"
+
+        # Read current status from NEW path first, fall back to old
         local current="none"
-        if [[ -f "$scoped_proof" ]]; then
-            current=$(cut -d'|' -f1 "$scoped_proof" 2>/dev/null || echo "none")
+        if [[ -f "$new_proof" ]]; then
+            current=$(cut -d'|' -f1 "$new_proof" 2>/dev/null || echo "none")
+        elif [[ -f "$old_proof" ]]; then
+            current=$(cut -d'|' -f1 "$old_proof" 2>/dev/null || echo "none")
         fi
         [[ -z "$current" ]] && current="none"
 
@@ -294,9 +320,15 @@ write_proof_status() {
         new_ord=$(_proof_ordinal "$proof_status")
 
         if (( new_ord < current_ord )); then
-            # Check for epoch reset: .proof-epoch newer than .proof-status
-            local epoch_file="${claude_dir}/.proof-epoch"
-            local proof_file_for_cmp="${scoped_proof}"
+            # Check for epoch reset: proof-epoch newer than proof-status
+            # Check new state dir location first, fall back to old dotfile
+            local epoch_file="${claude_dir}/state/${phash}/proof-epoch"
+            if [[ ! -f "$epoch_file" ]]; then
+                epoch_file="${claude_dir}/.proof-epoch"
+            fi
+            # Use new_proof for comparison; fall back to old_proof if new doesn't exist
+            local proof_file_for_cmp="$new_proof"
+            [[ ! -f "$proof_file_for_cmp" ]] && proof_file_for_cmp="$old_proof"
 
             local allow_reset=false
             if [[ -f "$epoch_file" && -f "$proof_file_for_cmp" ]]; then
@@ -321,11 +353,12 @@ write_proof_status() {
             log_info "write_proof_status" "epoch reset allowed: ${current} → ${proof_status}" 2>/dev/null || true
         fi
 
-        # --- Write canonical proof-status file inside the lock ---
-
-        # Canonical: CLAUDE_DIR/.proof-status-{phash} (single source of truth)
-        mkdir -p "$(dirname "$scoped_proof")"
-        printf '%s\n' "$content" > "${scoped_proof}.tmp" && mv "${scoped_proof}.tmp" "$scoped_proof"
+        # --- Write to BOTH paths (dual-write migration) ---
+        # Primary: state/{phash}/proof-status
+        mkdir -p "$state_dir_path"
+        printf '%s\n' "$content" > "${new_proof}.tmp" && mv "${new_proof}.tmp" "$new_proof"
+        # Secondary: legacy .proof-status-{phash} (removed after migration completes)
+        printf '%s\n' "$content" > "${old_proof}.tmp" && mv "${old_proof}.tmp" "$old_proof"
 
         # Pre-create guardian marker to close proof-invalidation window.
         # Between verification and Guardian dispatch, any source file Write/Edit

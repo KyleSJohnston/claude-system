@@ -391,7 +391,9 @@ HELPER_EOF
 
     RESULT_A=$(cat "$RESULT_A_FILE" 2>/dev/null || echo "missing")
     RESULT_B=$(cat "$RESULT_B_FILE" 2>/dev/null || echo "missing")
-    FINAL_STATUS=$(cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "unknown")
+    # Check new state dir path first (Phase 3 dual-write), fall back to old dotfile
+    _NEW_PROOF="$T06_CLAUDE/state/${T06_PHASH}/proof-status"
+    FINAL_STATUS=$(cut -d'|' -f1 "$_NEW_PROOF" 2>/dev/null || cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "unknown")
 
     # Exactly one should succeed (exit 0), one should fail (exit nonzero)
     SUCCESSES=0
