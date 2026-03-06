@@ -125,18 +125,27 @@ _PROTECTED_STATE_FILES=(
     ".proof-epoch"
     ".state.lock"
     ".proof-status.lock"
+    "proof-status"       # state/{phash}/proof-status (no dot prefix)
+    "test-status"        # state/{phash}/test-status (no dot prefix)
+    "proof-epoch"        # state/{phash}/proof-epoch (no dot prefix)
+    "proof.lock"         # state/locks/proof.lock
+    "state.lock"         # state/locks/state.lock (no dot prefix)
 )
 
 # is_protected_state_file FILEPATH
-#   Returns 0 if the file basename matches any protected state file pattern.
+#   Returns 0 if the file basename matches any protected state file pattern,
+#   or if the filepath is under a state/ directory.
 #   Uses prefix matching (e.g., ".proof-status.lock" matches ".proof-status").
 #   Usage: is_protected_state_file "/some/path/.proof-status" && emit_deny "..."
 is_protected_state_file() {
     local filepath="$1"
     local basename="${filepath##*/}"
+    # Direct basename match against registry
     for pattern in "${_PROTECTED_STATE_FILES[@]}"; do
         [[ "$basename" == $pattern* ]] && return 0
     done
+    # Path-based match: anything under state/ directory is protected
+    [[ "$filepath" == */state/* ]] && return 0
     return 1
 }
 
@@ -214,12 +223,22 @@ is_claude_meta_repo() {
     [[ "${common_dir%/.git}" == */.claude ]]
 }
 
-# Read .test-status and populate TEST_RESULT, TEST_FAILS, TEST_TIME, TEST_AGE globals.
+# Read test-status and populate TEST_RESULT, TEST_FAILS, TEST_TIME, TEST_AGE globals.
+# Checks state/{phash}/test-status first (new path), falls back to .test-status (legacy).
 # Returns 0 on success, 1 if status file doesn't exist.
 # Usage: read_test_status "$PROJECT_ROOT"
 read_test_status() {
     local root="${1:-.}"
-    local status_file="$root/.claude/.test-status"
+    local claude_dir
+    claude_dir=$(PROJECT_ROOT="$root" get_claude_dir 2>/dev/null || echo "$root/.claude")
+    local phash
+    phash=$(project_hash "$root")
+    # New path: state/{phash}/test-status
+    local status_file="${claude_dir}/state/${phash}/test-status"
+    # Migration fallback: legacy .test-status
+    if [[ ! -f "$status_file" ]]; then
+        status_file="${claude_dir}/.test-status"
+    fi
     TEST_RESULT="" TEST_FAILS="" TEST_TIME="" TEST_AGE=""
     [[ -f "$status_file" ]] || return 1
     TEST_RESULT=$(cut -d'|' -f1 < "$status_file")

@@ -46,8 +46,12 @@ state_update() {
     local value="${2:?state_update requires a value}"
     local source="${3:-${_HOOK_NAME:-unknown}}"
     local claude_dir="${CLAUDE_DIR:-$(get_claude_dir 2>/dev/null || echo "$HOME/.claude")}"
-    local state_file="${claude_dir}/state.json"
-    local lockfile="${claude_dir}/.state.lock"
+    local state_dir_base="${claude_dir}/state"
+    mkdir -p "$state_dir_base" 2>/dev/null || true
+    local state_file="${state_dir_base}/state.json"
+    local locks_dir="${state_dir_base}/locks"
+    mkdir -p "$locks_dir" 2>/dev/null || true
+    local lockfile="${locks_dir}/state.lock"
     local timestamp
     timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -92,7 +96,11 @@ state_update() {
 state_read() {
     local key="${1:?state_read requires a key}"
     local claude_dir="${CLAUDE_DIR:-$(get_claude_dir 2>/dev/null || echo "$HOME/.claude")}"
-    local state_file="${claude_dir}/state.json"
+    local state_file="${claude_dir}/state/state.json"
+    # Migration fallback: check legacy state.json location
+    if [[ ! -f "$state_file" && -f "${claude_dir}/state.json" ]]; then
+        state_file="${claude_dir}/state.json"
+    fi
 
     [[ ! -f "$state_file" ]] && return 1
 
@@ -105,6 +113,40 @@ state_read() {
     return 1
 }
 
-export -f state_update state_read
+# state_dir [PROJECT_ROOT]
+#   Returns the canonical state directory for the current project.
+#   Creates the directory if it doesn't exist.
+#   Path: $CLAUDE_DIR/state/{project_hash}/
+#
+# @decision DEC-RSM-STATEDIR-001
+# @title Unified state directory with per-project hash subdirectories
+# @status accepted
+# @rationale Consolidates scattered dotfiles (.proof-status-{phash},
+#   .test-status, .proof-epoch, .cas-failures, .proof-gate-pending) into
+#   a structured directory hierarchy. The project hash becomes a directory
+#   name instead of a file suffix, yielding clean internal names.
+#   Backward-compatible via dual-write during migration (W3-1, W3-2).
+state_dir() {
+    local project_root="${1:-${PROJECT_ROOT:-$(detect_project_root)}}"
+    local claude_dir
+    claude_dir=$(PROJECT_ROOT="$project_root" get_claude_dir)
+    local phash
+    phash=$(project_hash "$project_root")
+    local dir="${claude_dir}/state/${phash}"
+    mkdir -p "$dir" 2>/dev/null || true
+    echo "$dir"
+}
+
+# state_locks_dir
+#   Returns the centralized locks directory: $CLAUDE_DIR/state/locks/
+#   Creates the directory if it doesn't exist.
+state_locks_dir() {
+    local claude_dir="${CLAUDE_DIR:-$(get_claude_dir)}"
+    local dir="${claude_dir}/state/locks"
+    mkdir -p "$dir" 2>/dev/null || true
+    echo "$dir"
+}
+
+export -f state_update state_read state_dir state_locks_dir
 
 _STATE_LIB_LOADED=1

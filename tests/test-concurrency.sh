@@ -123,7 +123,7 @@ export _HOOK_NAME="test-concurrency"
 state_update ".concurrent.key_a" "value_a" "test-t01" 2>/dev/null || true
 state_update ".concurrent.key_b" "value_b" "test-t01" 2>/dev/null || true
 
-STATE_FILE="$T01_CLAUDE/state.json"
+STATE_FILE="$T01_CLAUDE/state/state.json"
 if [[ -f "$STATE_FILE" ]]; then
     KEY_A=$(jq -r '.concurrent.key_a // empty' "$STATE_FILE" 2>/dev/null || echo "")
     KEY_B=$(jq -r '.concurrent.key_b // empty' "$STATE_FILE" 2>/dev/null || echo "")
@@ -391,7 +391,9 @@ HELPER_EOF
 
     RESULT_A=$(cat "$RESULT_A_FILE" 2>/dev/null || echo "missing")
     RESULT_B=$(cat "$RESULT_B_FILE" 2>/dev/null || echo "missing")
-    FINAL_STATUS=$(cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "unknown")
+    # Check new state dir path first (Phase 3 dual-write), fall back to old dotfile
+    _NEW_PROOF="$T06_CLAUDE/state/${T06_PHASH}/proof-status"
+    FINAL_STATUS=$(cut -d'|' -f1 "$_NEW_PROOF" 2>/dev/null || cut -d'|' -f1 "$SCOPED_PROOF" 2>/dev/null || echo "unknown")
 
     # Exactly one should succeed (exit 0), one should fail (exit nonzero)
     SUCCESSES=0

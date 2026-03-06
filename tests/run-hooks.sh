@@ -100,7 +100,7 @@ _print_scope_usage() {
     echo "  integration — settings.json sync, subagent tracking, update-check"
     echo "  trace       — Trace protocol (init_trace, finalize_trace, detect, subagent injection)"
     echo "  gate        — Gate hook behavioral tests (branch-guard, doc-gate, test-gate, mock-gate)"
-    echo "  state       — State Registry Lint + Multi-Context Pass"
+    echo "  state       — State Registry Lint + Multi-Context Pass + State Directory Migration tests"
     echo "  fixtures    — Expanded Fixture Coverage (30 new fixture tests)"
     echo "  todo        — todo.sh backlog script unit tests"
     echo "  scan        — scan-backlog.sh debt marker scanner unit tests"
@@ -148,7 +148,7 @@ _scope_pattern() {
         integration) echo "settings\.json|subagent tracking|update-check\.sh" ;;
         trace)       echo "trace protocol" ;;
         gate)        echo "branch-guard\.sh behavioral|doc-gate\.sh behavioral|test-gate\.sh behavioral|mock-gate\.sh behavioral|proof-status-write-guard behavioral" ;;
-        state)       echo "State Registry Lint|Multi-Context Pass" ;;
+        state)       echo "State Registry Lint|Multi-Context Pass|State Directory Migration" ;;
         fixtures)    echo "Expanded Fixture Coverage" ;;
         todo)        echo "todo\.sh" ;;
         scan)        echo "scan-backlog\.sh" ;;
@@ -2777,6 +2777,32 @@ fi
 
 echo ""
 fi # end: concurrency
+
+# =============================================================================
+# --- Test: State Directory Migration tests (Phase 3) ---
+# Validates W3-0 through W3-4: state_dir(), state_locks_dir(), resolve_proof_file()
+# new-first fallback, write_proof_status() dual-write, read_test_status() fallback,
+# is_protected_state_file() state/* path matching, and session-end sweep.
+# =============================================================================
+if should_run_section "State Directory Migration"; then
+echo ""
+echo "--- State Directory Migration tests (Phase 3) ---"
+STATE_DIR_TEST="$SCRIPT_DIR/test-state-directory.sh"
+
+if [[ -f "$STATE_DIR_TEST" ]]; then
+    if bash "$STATE_DIR_TEST" 2>/dev/null; then
+        pass "test-state-directory.sh — all 10 state directory migration tests passed"
+    else
+        fail "test-state-directory.sh" "one or more state directory migration tests failed (run directly for details)"
+        failed=$((failed + 1))
+    fi
+else
+    fail "test-state-directory.sh" "test file not found at $STATE_DIR_TEST"
+    failed=$((failed + 1))
+fi
+
+echo ""
+fi # end: State Directory Migration
 
 # --- Test: Bash 3.2 compatibility — no declare -A in hooks ---
 # Prevents regressions: macOS ships bash 3.2 which silently ignores declare -A.
