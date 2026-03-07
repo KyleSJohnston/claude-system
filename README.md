@@ -13,7 +13,33 @@ A batteries-included governance layer for Claude Code. Four specialized agents h
 
 **Instructions guide. Hooks enforce.**
 
-*Formerly `claude-system`.*
+---
+
+## What's New in v3.1 (Metanoia)
+
+This release represents **617 commits** over v2.0 — a ground-up refactor of the hook architecture, state management, and agent governance.
+
+**The headline:** 17 individual hook scripts consolidated into 4 entry points backed by 10 lazy-loaded domain libraries. The result is **74% less hook overhead** per session with zero governance loss.
+
+| v2.0 | v3.1 |
+|------|------|
+| 17 hooks firing independently | 4 consolidated entry points |
+| ~26s hook overhead/session | ~6.7s hook overhead/session |
+| 54 tests | 160+ tests |
+| macOS only | macOS + Ubuntu CI |
+| Flat-file state | Per-worktree isolated state store |
+| 3 agents | 4 agents (+ Tester with auto-verify) |
+| Manual worktree management | Auto-sweep, roster, CWD recovery |
+
+**Key new capabilities:**
+- **Lint-on-write** — shellcheck/ruff/cargo clippy runs synchronously on every Write/Edit
+- **Dispatch enforcement** — hooks mechanically block the orchestrator from writing source code directly
+- **Cross-project isolation** — SHA-256 project hashing prevents state contamination across concurrent sessions
+- **Proof-before-commit chain** — Implement -> Test -> Verify -> Commit, each gate enforced by hooks
+- **Self-validation** — version sentinels, `bash -n` preflight, hooks-gen integrity check at startup
+- **Observatory** — self-improving flywheel that analyzes agent traces and surfaces improvement signals
+
+See the full [CHANGELOG](CHANGELOG.md) for the complete list.
 
 ---
 
@@ -97,7 +123,7 @@ The model writes on main, skips tests, force-pushes, and forgets the plan once t
 
 Every arrow is a hook. Every feedback loop is automatic. The model doesn't choose to follow the process — the hooks won't let it skip. Try to write code without a plan and you're pushed back. Try to commit with failing tests and you're pushed back. Try to skip documentation and you're pushed back. Try to commit without tester sign-off and you're pushed back. The system self-corrects until the work is right.
 
-**The result:** you move faster because you never think about process. The hooks think about it for you. Dangerous commands get denied or rewritten (`--force` → `--force-with-lease`, `/tmp/` → project `tmp/`). Everything else either flows through or gets caught. You just describe what you want and review what comes out.
+**The result:** you move faster because you never think about process. The hooks think about it for you. Dangerous commands get denied with corrections (`--force` → use `--force-with-lease`, `/tmp/` → use project `tmp/`). Everything else either flows through or gets caught. You just describe what you want and review what comes out.
 
 ---
 
@@ -153,7 +179,7 @@ Settings are split: `settings.json` (tracked, universal) and `settings.local.jso
 
 ### 3. Verify
 
-On your first `claude` session, you should see the SessionStart hook inject git state, plan status, and worktree info. Try writing a file to `/tmp/test.txt` — `pre-bash.sh` should rewrite it to `tmp/test.txt` in the project root.
+On your first `claude` session, you should see the SessionStart hook inject git state, plan status, and worktree info. Try writing a file to `/tmp/test.txt` — `pre-bash.sh` will deny it and direct you to use `tmp/test.txt` in the project root instead.
 
 **Optional:** `/backlog` command uses GitHub Issues via `gh` CLI (`gh auth login`). Research skills (`deep-research`) accept OpenAI/Perplexity/Gemini API keys but degrade gracefully without them. Desktop notifications need `terminal-notifier` (macOS: `brew install terminal-notifier`).
 
@@ -244,9 +270,9 @@ Before (v2.0):                          After (Metanoia):
 
 Bash cmd fires 3 hooks:                 Bash cmd fires 1 hook:
   guard.sh          134ms avg             pre-bash.sh       93ms p50
-  auto-review.sh     83ms avg               (guard + auto-review + doc-freshness
-  doc-freshness.sh   50ms avg                merged, libraries lazy-loaded)
-  ─────────────────────────
+  auto-review.sh     83ms avg               (guard + doc-freshness merged,
+  doc-freshness.sh   50ms avg                auto-review pruned,
+  ─────────────────────────                  libraries lazy-loaded)
   Total:            ~267ms               Total:             ~93ms  (65% reduction)
 
 Write cmd fires 6 hooks:                Write cmd fires 1 hook:
@@ -304,7 +330,7 @@ Derived from 39,644 timing entries across 5 days of real sessions. Pre-refactor 
 
 | Hook | Pre-Refactor Avg | Post-Refactor Avg | Improvement |
 |------|-------------------|-------------------|-------------|
-| Bash protection | 134ms (guard alone) | 128ms (all 3 merged) | Same latency, 3x fewer spawns |
+| Bash protection | 134ms (guard alone) | 128ms (guard + doc-freshness merged, auto-review pruned) | Same latency, 3→1 hook spawns |
 | Write protection | 303ms (6 hooks summed) | 66ms (all 6 merged) | **78% faster** |
 | Post-write tracking | 42ms | 6ms | **86% faster** |
 
@@ -318,14 +344,14 @@ Modeled on a representative session: 50 Bash commands + 20 Write/Edit calls.
 | Total hook overhead | ~26s | ~6.7s | **74% less** |
 | Library code loaded per hook | 3,222 lines (full) | ~1,200 lines (selective) | **63% less** |
 
-The lazy-loading mechanism (`require_git()`, `require_plan()`, `require_trace()`, etc.) means each hook loads only the domain libraries it actually needs. A simple `git status` check loads `core-lib.sh` (400 lines) and `git-lib.sh` (76 lines). A source file write additionally loads `plan-lib.sh` and `doc-lib.sh`. The full 3,222-line library set is never loaded by any single invocation.
+The lazy-loading mechanism (`require_git()`, `require_plan()`, `require_trace()`, etc.) means each hook loads only the domain libraries it actually needs. A simple `git status` check loads `core-lib.sh` (652 lines) and `git-lib.sh` (78 lines). A source file write additionally loads `plan-lib.sh` and `doc-lib.sh`. The full library set is never loaded by any single invocation.
 
 ### Test Suite
 
 | Metric | Value |
 |--------|-------|
-| Total tests | 160 |
-| Passing | 159 (99.4%) |
+| Total tests | 160+ |
+| Passing | 160+ |
 | Benchmark fixtures | 63 |
 | Test scopes (`--scope`) | 10 (syntax, pre-bash, pre-write, post-write, unit, session, integration, trace, gate, state) |
 | Full suite runtime | 45–90s |
@@ -334,19 +360,6 @@ The lazy-loading mechanism (`require_git()`, `require_plan()`, `require_trace()`
 Run benchmarks: `bash tests/bench-hooks.sh`
 Run timing report: `bash scripts/hook-timing-report.sh`
 Run scoped tests: `bash tests/run-hooks.sh --scope pre-bash`
-
-### End-to-End Benchmark (Claude-Ctrl-Performance Harness)
-
-Docker-isolated A/B comparison on T01 (simple-bugfix, Sonnet, n=3):
-
-| Metric | Without Claude-Ctrl | With Claude-Ctrl v3.0 (Metanoia) | Improvement |
-|--------|----------------------|---------------------|-------------|
-| Total tokens | 375k–505k | 178k–208k | 45–65% fewer |
-| Turns to completion | 19–26 | 12–14 | 36–47% fewer |
-| Artifact completeness | 56–67% | 100% | Full output every time |
-| Hook overhead | 0ms | ~40ms/call | Negligible governance cost |
-
-Benchmark source: [Claude-Ctrl-Performance](https://github.com/juanandresgs/Claude-Ctrl-Performance)
 
 ---
 
@@ -371,21 +384,21 @@ These are non-negotiable. Each one is enforced by hooks that run every time, reg
 
 ## Hook System
 
-All hooks are registered in `settings.json` and run deterministically — JSON in on stdin, JSON out on stdout. Hooks fire at four lifecycle points: before tool use (block or rewrite), after tool use (lint, track, validate), at session boundaries (context injection, cleanup), and around subagents (inject context, verify output).
+All hooks are registered in `settings.json` and run deterministically — JSON in on stdin, JSON out on stdout. Hooks fire at four lifecycle points: before tool use (block or advise), after tool use (lint, track, validate), at session boundaries (context injection, cleanup), and around subagents (inject context, verify output).
 
 For the full protocol, detailed tables, enforcement patterns, state files, and shared library APIs, see [`hooks/HOOKS.md`](hooks/HOOKS.md).
 
 **Shared Libraries** (not registered as hooks — sourced by hook scripts):
-- `source-lib.sh` — Bootstrap loader: sources `log.sh` + `core-lib.sh` (667 lines total). Provides `require_*()` lazy loaders for domain libraries. All hooks source this first.
+- `source-lib.sh` — Bootstrap loader: sources `log.sh` + `core-lib.sh` (~1,093 lines total). Provides `require_*()` lazy loaders for domain libraries. All hooks source this first.
 - `log.sh` — JSON I/O, stdin caching, path utilities (`detect_project_root`, `resolve_proof_file`)
 - `core-lib.sh` — deny/allow/advisory output helpers, atomic writes, shared predicates
-- Domain libraries loaded on demand via `require_*()`): `git-lib.sh`, `plan-lib.sh`, `trace-lib.sh`, `session-lib.sh`, `doc-lib.sh`, `ci-lib.sh`
+- Domain libraries loaded on demand via `require_*()`): `git-lib.sh`, `plan-lib.sh`, `trace-lib.sh`, `session-lib.sh`, `doc-lib.sh`, `ci-lib.sh`, `state-lib.sh`
 
-**PreToolUse Hooks** — fire before every tool call; can block or rewrite:
+**PreToolUse Hooks** — fire before every tool call; can block or advise:
 
 | Hook | Event | Consolidated Logic |
 |------|-------|--------------------|
-| **pre-bash.sh** | PreToolUse:Bash | Safety gate + `/tmp/` denial + `--force-with-lease` + test evidence gate (guard) + three-tier command classification (auto-review) + doc-freshness enforcement at merge |
+| **pre-bash.sh** | PreToolUse:Bash | Safety gate + `/tmp/` denial + `--force-with-lease` + test evidence gate (guard) + doc-freshness enforcement at merge |
 | **pre-write.sh** | PreToolUse:Write\|Edit | Checkpoint snapshots + test-gate (warn/block on failing tests) + mock-gate + branch-guard (blocks main) + doc-gate (headers + @decision) + plan-check (requires MASTER_PLAN.md) |
 | **task-track.sh** | PreToolUse:Task | Track subagent state and update status bar; gate Guardian on verified proof |
 
@@ -514,7 +527,7 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 |----------|-----------|-----------------|
 | Branch management | Works on whatever branch | Blocked from writing on main; worktree isolation enforced |
 | Temporary files | Writes to `/tmp/` | Denied with redirect to project `tmp/` directory |
-| Force push | Executes directly | Denied to main/master; `--force` elsewhere rewritten to `--force-with-lease` |
+| Force push | Executes directly | Denied to main/master; `--force` elsewhere denied with `--force-with-lease` suggestion |
 | Test discipline | Tests optional | Writes blocked when tests fail; commits require test evidence |
 | Mocking | Mocks anything | Internal mocks warned then blocked; external boundary mocks only |
 | Planning | Implements immediately | Plan mode by default; MASTER_PLAN.md required before code |
@@ -527,7 +540,7 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 | Verification | Self-reported done | Tester runs live, auto-verify (High confidence) or user approval gate |
 | Checkpoints | No snapshots | Git ref-based checkpoints before every write; restore with `/rewind` |
 | Learning | No memory across sessions | Observatory analyzes traces, surfaces improvement suggestions |
-| CWD safety | Delete worktree = bricked session | Three-path CWD recovery: Check 0.5 auto-recover + Check 0.75 deny |
+| CWD safety | Delete worktree = bricked session | CWD protection: Check 0.75 denies cd into worktrees |
 
 ---
 
@@ -547,7 +560,7 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 | Desktop notifications not firing | Install `terminal-notifier` (macOS only): `brew install terminal-notifier` |
 | test-gate blocking unexpectedly | Check `.claude/.test-status` — stale from previous session? Delete it |
 | SessionStart not injecting context | Known bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)). `prompt-submit.sh` mitigates on first prompt |
-| CWD bricked after worktree deletion | pre-bash.sh Check 0.5 auto-recovers on next Bash call. Prevention: never `cd` into worktrees from orchestrator — use absolute paths |
+| CWD bricked after worktree deletion | pre-bash.sh Check 0.75 denies cd into worktrees. Use `git -C <path>` or subshell `(cd <path> && cmd)` instead |
 | Stale `.proof-status` blocking commits | Delete `.claude/.proof-status` manually, or re-run the tester to generate fresh evidence |
 
 ## Recovery and Uninstall
