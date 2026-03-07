@@ -162,6 +162,17 @@ DECISION_LINE_THRESHOLD=50
 TEST_STALENESS_THRESHOLD=600    # 10 minutes in seconds
 SESSION_STALENESS_THRESHOLD=1800 # 30 minutes in seconds
 
+# @decision DEC-V3-FIX3-001
+# @title GUARDIAN_ACTIVE_TTL constant for guardian marker freshness checks
+# @status accepted
+# @rationale The 600-second TTL for guardian marker validity was duplicated as
+#   magic number 600 in both post-write.sh and pre-bash.sh. A single constant
+#   in core-lib.sh ensures consistent behavior and documents the tiered approach:
+#   - GUARDIAN_ACTIVE_TTL (600s): "is a guardian active right now?" decisions
+#   - Init cleanup (30 min): clean markers from likely-crashed agents
+#   - Session cleanup (60 min): belt-and-suspenders final cleanup
+GUARDIAN_ACTIVE_TTL=600
+
 # TTL rate limits for expensive stop.sh operations (seconds).
 # @decision DEC-PERF-003
 # @title TTL sentinel rate-limiting for stop.sh per-turn overhead

@@ -212,6 +212,58 @@ require_ci() {
     source "${_SRCLIB_DIR}/ci-lib.sh"
 }
 
+# detect_workflow_id — determine the active workflow from a file path or env context.
+#
+# Returns a worktree identifier (the worktree directory name under .worktrees/) or "main".
+# Used to scope proof-status to the specific workflow so parallel worktrees have
+# independent proof state.
+#
+# Priority:
+#   1. File path: if filepath contains /.worktrees/, extract the worktree name
+#   2. WORKTREE_PATH env var: set by subagent-start.sh for agents running in worktrees
+#   3. Default: "main" (main checkout or unknown context)
+#
+# Usage:
+#   workflow_id=$(detect_workflow_id "$FILE_PATH")
+#   workflow_id=$(detect_workflow_id "")  # reads WORKTREE_PATH
+#
+# @decision DEC-V3-FIX5-001
+# @title detect_workflow_id() for per-worktree proof isolation
+# @status accepted
+# @rationale All agents share PROJECT_ROOT (the main checkout) so .proof-status-{phash}
+#   is shared across worktrees. When implementer-B writes a file, it invalidates
+#   the proof that tester-A verified for implementer-A. Scoping proof to the worktree
+#   requires identifying which worktree a file belongs to. detect_workflow_id()
+#   extracts the worktree name from file paths (/.worktrees/NAME/...) or from the
+#   WORKTREE_PATH environment variable set by subagent-start.sh.
+detect_workflow_id() {
+    local filepath="${1:-}"
+
+    # Priority 1: Extract worktree name from file path
+    if [[ "$filepath" == */.worktrees/* ]]; then
+        local after="${filepath#*/.worktrees/}"
+        local wt_name="${after%%/*}"
+        if [[ -n "$wt_name" ]]; then
+            echo "$wt_name"
+            return 0
+        fi
+    fi
+
+    # Priority 2: WORKTREE_PATH env var (set by subagent-start.sh)
+    if [[ -n "${WORKTREE_PATH:-}" ]]; then
+        local wt_name="${WORKTREE_PATH##*/}"
+        if [[ -n "$wt_name" ]]; then
+            echo "$wt_name"
+            return 0
+        fi
+    fi
+
+    # Default: main checkout (no worktree)
+    echo "main"
+}
+
+export -f detect_workflow_id
+
 require_state() {
     [[ -n "${_STATE_LIB_LOADED:-}" ]] && return 0
     source "${_SRCLIB_DIR}/state-lib.sh"

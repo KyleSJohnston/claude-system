@@ -214,6 +214,66 @@ resolve_proof_file() {
     echo "$new_path"
 }
 
+# resolve_proof_file_for_path — return the workflow-scoped proof-status path for a file.
+#
+# Calls detect_workflow_id() on the file path to determine the active worktree.
+# If the file is in a worktree (workflow_id != "main"), returns:
+#   CLAUDE_DIR/state/{phash}/worktrees/{workflow_id}/proof-status
+# For "main" or unknown, returns the standard canonical path:
+#   CLAUDE_DIR/state/{phash}/proof-status
+#
+# Usage: proof_file=$(resolve_proof_file_for_path "$FILE_PATH")
+#
+# @decision DEC-V3-FIX6-001
+# @title resolve_proof_file_for_path() — workflow-aware proof path resolution
+# @status accepted
+# @rationale Convenience wrapper that combines detect_workflow_id() with path
+#   construction. Callers (post-write.sh, task-track.sh, check-tester.sh) can
+#   use this instead of two-step detect+resolve. Backward compatible: non-worktree
+#   paths return the existing canonical path unchanged.
+resolve_proof_file_for_path() {
+    local filepath="${1:-}"
+    local claude_dir="${CLAUDE_DIR:-$(get_claude_dir)}"
+    local project_root="${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(detect_project_root)}}"
+    local phash
+    phash=$(project_hash "$project_root")
+
+    # Determine workflow from file path
+    local workflow_id
+    # detect_workflow_id may not be loaded yet if source-lib.sh hasn't been sourced.
+    # Inline the same logic here as a fallback to avoid circular dependency.
+    if declare -f detect_workflow_id >/dev/null 2>&1; then
+        workflow_id=$(detect_workflow_id "$filepath")
+    else
+        # Inline fallback (same logic as detect_workflow_id)
+        if [[ "$filepath" == */.worktrees/* ]]; then
+            local _after="${filepath#*/.worktrees/}"
+            workflow_id="${_after%%/*}"
+            [[ -z "$workflow_id" ]] && workflow_id="main"
+        elif [[ -n "${WORKTREE_PATH:-}" ]]; then
+            workflow_id="${WORKTREE_PATH##*/}"
+            [[ -z "$workflow_id" ]] && workflow_id="main"
+        else
+            workflow_id="main"
+        fi
+    fi
+
+    if [[ "$workflow_id" != "main" && -n "$workflow_id" ]]; then
+        echo "${claude_dir}/state/${phash}/worktrees/${workflow_id}/proof-status"
+    else
+        # Standard canonical path (backward compatible)
+        local new_path="${claude_dir}/state/${phash}/proof-status"
+        local old_path="${claude_dir}/.proof-status-${phash}"
+        if [[ -f "$new_path" ]]; then
+            echo "$new_path"
+        elif [[ -f "$old_path" ]]; then
+            echo "$old_path"
+        else
+            echo "$new_path"
+        fi
+    fi
+}
+
 # write_proof_status — atomically write a proof status to the canonical proof-status file.
 #
 # Usage: write_proof_status <status> [project_root]
@@ -378,4 +438,4 @@ write_proof_status() {
 }
 
 # Export for subshells
-export -f log_json log_info read_input get_field detect_project_root get_claude_dir project_hash resolve_proof_file write_proof_status
+export -f log_json log_info read_input get_field detect_project_root get_claude_dir project_hash resolve_proof_file resolve_proof_file_for_path write_proof_status

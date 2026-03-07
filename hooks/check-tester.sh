@@ -293,12 +293,13 @@ if [[ "$AUTO_VERIFIED" == "true" ]]; then
             fi
         fi
         finalize_trace "$AV_TRACE_ID" "$PROJECT_ROOT" "tester" 2>/dev/null || true
-        # Breadcrumb: post-task.sh reads this after finalize_trace deletes the marker
-        # Dual-write: state/{phash}/last-tester-trace (new) + .last-tester-trace (legacy)
-        _PHASH_LTT=$(project_hash "$PROJECT_ROOT")
-        mkdir -p "${CLAUDE_DIR}/state/${_PHASH_LTT}" 2>/dev/null || true
-        echo "${AV_TRACE_ID}" > "${CLAUDE_DIR}/state/${_PHASH_LTT}/last-tester-trace" 2>/dev/null || true
-        echo "${AV_TRACE_ID}" > "${CLAUDE_DIR}/.last-tester-trace" 2>/dev/null || true
+        # @decision DEC-V3-FIX4-001
+        # @title Remove orphaned breadcrumb writes from check-tester.sh
+        # @status accepted
+        # @rationale DEC-PROOF-BREADCRUMB-001 removed the breadcrumb system but two write
+        #   sites in check-tester.sh were missed. The breadcrumb reads in post-task.sh
+        #   remain for backward compatibility with lingering files from previous sessions.
+        #   Writes removed: state/{phash}/tester-trace-id and .tester-trace-id (dotfiles).
     fi
 
     CONTEXT="Tester validation: proof-status=verified (auto-verified)."
@@ -469,12 +470,7 @@ COMPLIANCE_TESTER_INIT_EOF
     if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"; then
         append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for tester trace $TRACE_ID"
     fi
-    # Breadcrumb: post-task.sh reads this after finalize_trace deletes the marker
-    # Dual-write: state/{phash}/last-tester-trace (new) + .last-tester-trace (legacy)
-    _PHASH_LTT2=$(project_hash "$PROJECT_ROOT")
-    mkdir -p "${CLAUDE_DIR}/state/${_PHASH_LTT2}" 2>/dev/null || true
-    echo "${TRACE_ID}" > "${CLAUDE_DIR}/state/${_PHASH_LTT2}/last-tester-trace" 2>/dev/null || true
-    echo "${TRACE_ID}" > "${CLAUDE_DIR}/.last-tester-trace" 2>/dev/null || true
+    # Breadcrumb writes removed per DEC-V3-FIX4-001 — see auto-verify path above.
 fi
 
 # Check 3: Tester completeness — detect partial/incomplete runs

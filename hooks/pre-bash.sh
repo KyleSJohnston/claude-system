@@ -133,12 +133,32 @@ fi
 _stripped_cmd=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g" | sed -E '/^[[:space:]]*#/d; s/[[:space:]]#.*$//')
 
 # Check if a Guardian agent is currently active (marker files in TRACE_STORE).
+#
+# @decision DEC-V3-FIX1-001
+# @title is_guardian_active() TTL check — stale markers no longer block git ops
+# @status accepted
+# @rationale Previously is_guardian_active() just counted .active-guardian-* files
+#   without checking their age. A stale marker from a crashed session permanently
+#   blocked all git operations. Fix: read the "pipe|timestamp" format and apply
+#   GUARDIAN_ACTIVE_TTL (600s), same logic as post-write.sh. If the marker value
+#   has no pipe delimiter (e.g., written by init_trace() as a plain trace_id),
+#   fall back to file mtime — a fresh file (within TTL) is still considered active.
+#   Only count markers whose embedded (or mtime-derived) timestamp is within TTL.
 is_guardian_active() {
-    local count=0
+    local _gm _marker_ts _now _file_age
+    _now=$(date +%s)
     for _gm in "${TRACE_STORE:-$HOME/.claude/traces}/.active-guardian-"*; do
-        [[ -f "$_gm" ]] && count=$(( count + 1 ))
+        [[ -f "$_gm" ]] || continue
+        _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "")
+        # If no pipe delimiter, fall back to file mtime
+        if [[ ! "$_marker_ts" =~ ^[0-9]+$ ]]; then
+            _marker_ts=$(_file_mtime "$_gm")
+        fi
+        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt ${GUARDIAN_ACTIVE_TTL:-600} ]]; then
+            return 0
+        fi
     done
-    [[ "$count" -gt 0 ]]
+    return 1
 }
 
 # =============================================================================

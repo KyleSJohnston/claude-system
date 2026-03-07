@@ -344,15 +344,46 @@ if [[ "$AGENT_TYPE" == "implementer" ]]; then
         fi
     fi
 
-    # Gate C.2: Activate proof gate — creates state/{phash}/proof-status = needs-verification.
+    # Gate C.2: Activate proof gate — creates proof-status = needs-verification.
     # This activates Gate A, blocking Guardian until verification completes.
     # Writes to project-scoped file to prevent cross-project contamination.
     # Check both new and old locations to avoid double-initialization during migration.
+    #
+    # @decision DEC-V3-FIX8-001
+    # @title Workflow-scoped proof activation in Gate C.2
+    # @status accepted
+    # @rationale When the dispatch prompt contains a worktree path (/.worktrees/NAME),
+    #   the implementer runs in that worktree. Activating the project-wide proof gate
+    #   breaks concurrent workflows: if tester-A already verified workflow-A, dispatching
+    #   implementer-B would reset the project-wide proof to needs-verification, blocking
+    #   Guardian-A (which needs "verified" to proceed). Fix: detect the worktree from
+    #   the prompt and write to the workflow-specific proof file. Backward compatible:
+    #   when no worktree is found, write to the project-wide proof file as before.
     _PHASH=$(project_hash "$PROJECT_ROOT")
-    _NEW_PROOF="${CLAUDE_DIR}/state/${_PHASH}/proof-status"
-    _OLD_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
-    if [[ ! -f "$_NEW_PROOF" && ! -f "$_OLD_PROOF" ]]; then
-        write_proof_status "needs-verification" "$PROJECT_ROOT"
+    _IMPL_PROMPT=$(get_field '.tool_input.prompt' 2>/dev/null || echo "")
+    # Extract worktree name from prompt (looks for .worktrees/NAME pattern)
+    _IMPL_WORKFLOW="main"
+    if echo "$_IMPL_PROMPT" | grep -qE '\.worktrees/[^/ ]+'; then
+        _IMPL_WORKFLOW=$(echo "$_IMPL_PROMPT" | grep -oE '\.worktrees/[^/ ]+' | head -1 | sed 's|\.worktrees/||')
+    fi
+
+    if [[ "$_IMPL_WORKFLOW" != "main" && -n "$_IMPL_WORKFLOW" ]]; then
+        # Workflow-scoped proof activation
+        _WF_PROOF_DIR="${CLAUDE_DIR}/state/${_PHASH}/worktrees/${_IMPL_WORKFLOW}"
+        _WF_PROOF="${_WF_PROOF_DIR}/proof-status"
+        mkdir -p "$_WF_PROOF_DIR" 2>/dev/null || true
+        if [[ ! -f "$_WF_PROOF" ]] || \
+           [[ "$(cut -d'|' -f1 "$_WF_PROOF" 2>/dev/null)" != "needs-verification" ]]; then
+            printf 'needs-verification|%s\n' "$(date +%s)" > "${_WF_PROOF}.tmp" && \
+                mv "${_WF_PROOF}.tmp" "$_WF_PROOF" || true
+        fi
+    else
+        # Project-wide proof activation (backward compatible: no worktree in prompt)
+        _NEW_PROOF="${CLAUDE_DIR}/state/${_PHASH}/proof-status"
+        _OLD_PROOF="${CLAUDE_DIR}/.proof-status-${_PHASH}"
+        if [[ ! -f "$_NEW_PROOF" && ! -f "$_OLD_PROOF" ]]; then
+            write_proof_status "needs-verification" "$PROJECT_ROOT"
+        fi
     fi
 fi
 
