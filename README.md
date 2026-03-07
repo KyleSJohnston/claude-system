@@ -135,6 +135,22 @@ Instructions are probabilistic. Hooks are mechanical. That's the difference.
 
 ---
 
+## Design Philosophy
+
+Tell a model "never commit on main" and it works — until context pressure erases the rule. After compaction, after cognitive load, after forty minutes of deep implementation, constraints that live in the model's memory aren't constraints. They're suggestions. Wire a hook that fires before every Bash command and mechanically denies commits on main — and it works regardless of what the model remembers or forgets.
+
+LLMs are not deterministic systems with probabilistic quirks. They are **probabilistic systems** — and the only way to harness them into producing reliably good outcomes is through deterministic, event-based enforcement. An instruction is a hope. A feedback loop is a mechanism. Cybernetics gave us this framework decades ago.
+
+This system enforces. The observatory analyzes. The traces feed back. The gates adapt. Every version teaches me something about how to govern probabilistic systems, and those lessons feed into the next iteration. I call the end-state goal **Self-Evaluating Self-Adaptive Programs (SESAPs)** — probabilistic systems constrained to deterministically produce a range of desired outcomes. Not controlled through instruction. Controlled through mechanism.
+
+Most AI coding harnesses today rely entirely on prompt-level guidance for constraints. Claude Code is one of the few that provides comprehensive event-based hooks — the mechanical layer that makes deterministic governance possible. Without it, every session is a bet against context pressure. This project is meant to address the disturbing gap between developers at the frontier and the majority of token consumers vibing at the roulette wheel hoping for a payday.
+
+I've never been much of a gambler.
+
+*— JAGS*
+
+---
+
 ## Requirements
 
 | Dependency | Required | Purpose |
