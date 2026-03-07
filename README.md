@@ -27,7 +27,7 @@ Most AI coding harnesses today rely entirely on prompt-level guidance for constr
 
 I've never been much of a gambler.
 
-*— JAGS*
+*— [JAGS](https://x.com/juanandres_gs)*
 
 ---
 
@@ -72,7 +72,7 @@ See the full [CHANGELOG](CHANGELOG.md) for the complete list.
 
 ---
 
-## What This Changes
+## How It Works
 
 **Default Claude Code** — you describe a feature and:
 
@@ -82,7 +82,7 @@ idea → code → commit → push → discover the mess
 
 The model writes on main, skips tests, force-pushes, and forgets the plan once the context window fills up. Every session is a coin flip.
 
-**With this system** — the same feature request triggers a self-correcting pipeline:
+**With claude-ctrl** — the same feature request triggers a self-correcting pipeline:
 
 ```
                 ┌─────────────────────────────────────────┐
@@ -137,69 +137,6 @@ Every arrow is a hook. Every feedback loop is automatic. The model doesn't choos
 
 ---
 
-## Platform at a Glance
-
-```
-~/.claude/
-├── hooks/          # Hook scripts + shared libraries (the enforcement layer)
-├── agents/         # Planner, Implementer, Tester, Guardian
-├── skills/         # Research, governance, and workflow skills
-├── commands/       # Slash commands (/compact, /backlog)
-├── scripts/        # Utility scripts (worktree roster, timing reports, CI watch)
-├── observatory/    # Self-improving trace analysis flywheel
-├── traces/         # Agent execution archive
-├── tests/          # 160+ hook validation tests
-├── ARCHITECTURE.md # Definitive technical reference
-├── CLAUDE.md       # Session instructions (loaded every time)
-└── settings.json   # Hook registration + model config
-```
-
----
-
-## Getting Started
-
-### Prerequisites
-
-bash 3.2+, git 2.20+, jq 1.6+, and standard POSIX utils. Platform-specific: `shasum` or `sha256sum`, `lockf` (macOS) or `flock` (Linux) — both auto-detected. Run `bash scripts/check-deps.sh` after cloning to verify.
-
-### 1. Clone
-
-```bash
-# SSH
-git clone --recurse-submodules git@github.com:juanandresgs/claude-ctrl.git ~/.claude
-
-# Or HTTPS
-git clone --recurse-submodules https://github.com/juanandresgs/claude-ctrl.git ~/.claude
-```
-
-If you already have a `~/.claude` directory, back it up first: `tar czf ~/claude-backup-$(date +%Y%m%d).tar.gz ~/.claude`
-
-### 2. Configure
-
-```bash
-cp settings.local.example.json settings.local.json
-# Edit to set your model preference, MCP servers, plugins
-```
-
-Settings are split: `settings.json` (tracked, universal) and `settings.local.json` (gitignored, your overrides). Claude Code merges both, with local taking precedence.
-
-### 3. Verify
-
-On your first `claude` session, you should see the SessionStart hook inject git state, plan status, and worktree info. Try writing a file to `/tmp/test.txt` — `pre-bash.sh` will deny it and direct you to use `tmp/test.txt` in the project root instead.
-
-**Optional extras:** `gh` CLI for issue tracking, `terminal-notifier` for macOS alerts, API keys (OpenAI/Perplexity/Gemini) for the `deep-research` skill. Everything degrades gracefully without them.
-
-### Staying Updated
-
-The harness auto-checks for updates on every new session start. Same-MAJOR-version updates are applied automatically. Breaking changes (different MAJOR version) show a notification — you decide when to apply.
-
-- **Auto-updates enabled by default.** Create `~/.claude/.disable-auto-update` to disable.
-- **Manual update:** `cd ~/.claude && git pull --autostash --rebase`
-- **Fork users:** Your `origin` points to your fork, so you get your own updates. Add an `upstream` remote to also track the original repo.
-- **Local customizations safe:** `settings.local.json` and `CLAUDE.local.md` are gitignored. If you edit tracked files, `--autostash` preserves your changes. If a conflict occurs, the update aborts cleanly and you're notified.
-
----
-
 ## Sacred Practices
 
 Ten rules. Each one enforced by hooks that fire every time, regardless of what the model remembers.
@@ -207,44 +144,57 @@ Ten rules. Each one enforced by hooks that fire every time, regardless of what t
 | # | Practice | What Enforces It |
 |---|----------|-------------|
 | 1 | **Always Use Git** | `session-init.sh` injects git state; `pre-bash.sh` blocks destructive operations |
-| 2 | **Main is Sacred** | `pre-write.sh` (branch-guard logic) blocks writes on main; `pre-bash.sh` blocks commits on main |
-| 3 | **No /tmp/** | `pre-bash.sh` denies `/tmp/` paths and directs model to use project `tmp/` directory |
-| 4 | **Nothing Done Until Tested** | `pre-write.sh` (test-gate logic) warns then blocks source writes when tests fail; `pre-bash.sh` requires test evidence for commits |
-| 5 | **Solid Foundations** | `pre-write.sh` (mock-gate logic) detects and escalates internal mocking (warn → deny) |
-| 6 | **No Implementation Without Plan** | `pre-write.sh` (plan-check logic) denies source writes without MASTER_PLAN.md |
-| 7 | **Code is Truth** | `pre-write.sh` (doc-gate logic) enforces headers and @decision on 50+ line files |
-| 8 | **Approval Gates** | `pre-bash.sh` blocks force push; Guardian agent requires approval for all permanent ops |
-| 9 | **Track in Issues** | `post-write.sh` (plan-validate logic) checks alignment; `check-planner.sh` validates issue creation |
-| 10 | **Proof Before Commit** | `check-tester.sh` auto-verify evaluation; `prompt-submit.sh` user approval gate; `pre-bash.sh` evidence gate on commits |
+| 2 | **Main is Sacred** | `pre-write.sh` blocks writes on main; `pre-bash.sh` blocks commits on main |
+| 3 | **No /tmp/** | `pre-bash.sh` denies `/tmp/` paths and directs to project `tmp/` |
+| 4 | **Nothing Done Until Tested** | `pre-write.sh` warns then blocks when tests fail; `pre-bash.sh` requires test evidence for commits |
+| 5 | **Solid Foundations** | `pre-write.sh` detects and escalates internal mocking (warn → deny) |
+| 6 | **No Implementation Without Plan** | `pre-write.sh` denies source writes without MASTER_PLAN.md |
+| 7 | **Code is Truth** | `pre-write.sh` enforces headers and @decision annotations on 50+ line files |
+| 8 | **Approval Gates** | `pre-bash.sh` blocks force push; Guardian requires approval for all permanent ops |
+| 9 | **Track in Issues** | `post-write.sh` checks plan alignment; `check-planner.sh` validates issue creation |
+| 10 | **Proof Before Commit** | `check-tester.sh` auto-verify; `prompt-submit.sh` user approval gate; `pre-bash.sh` evidence gate |
 
 ---
 
-## Customization
+## Getting Started
 
-**Safe to change:** `settings.local.json` (model, MCP servers, plugins), API keys for research skills, hook timeouts in `settings.json`.
+### 1. Clone
 
-**Change with understanding:** Agent definitions (`agents/*.md`), hook scripts (`hooks/*.sh`), `CLAUDE.md` dispatch rules and sacred practices.
+```bash
+git clone --recurse-submodules git@github.com:juanandresgs/claude-ctrl.git ~/.claude
+```
 
----
+Back up first if you already have a `~/.claude` directory.
 
-## Troubleshooting
+### 2. Configure
 
-| Issue | Fix |
-|-------|-----|
-| Hook timeout errors | Increase `timeout` in `settings.json` for the slow hook |
-| Desktop notifications not firing | Install `terminal-notifier` (macOS only): `brew install terminal-notifier` |
-| test-gate blocking unexpectedly | Check `.claude/.test-status` — stale from previous session? Delete it |
-| SessionStart not injecting context | Known bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)). `prompt-submit.sh` mitigates on first prompt |
-| CWD bricked after worktree deletion | pre-bash.sh Check 0.75 denies cd into worktrees. Use `git -C <path>` or subshell `(cd <path> && cmd)` instead |
-| Stale `.proof-status` blocking commits | Delete `.claude/.proof-status` manually, or re-run the tester to generate fresh evidence |
+```bash
+cp settings.local.example.json settings.local.json
+```
 
-## Recovery and Uninstall
+Edit `settings.local.json` to set your model preference and MCP servers. This file is gitignored — your overrides stay local.
 
-Archived files are stored in `.archive/YYYYMMDD/`. Full backups at `~/claude-backup-*.tar.gz`.
+### 3. API Keys (optional)
 
-To debug a hook: `echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | bash hooks/pre-bash.sh`
+The `deep-research` skill queries OpenAI, Perplexity, and Gemini in parallel for multi-model synthesis. Copy the example and fill in your keys:
 
-**Uninstall:** Remove `~/.claude` and restart Claude Code. It will recreate a default config directory. Your projects are unaffected.
+```bash
+cp .env.example .env
+```
+
+Everything works without these — research just won't be available.
+
+### 4. Verify
+
+Run `bash scripts/check-deps.sh` to confirm dependencies. On your first `claude` session, the SessionStart hook will inject git state, plan status, and worktree info.
+
+### Staying Updated
+
+Auto-updates on every session start. Same-MAJOR-version updates apply automatically; breaking changes notify you first. Create `~/.claude/.disable-auto-update` to opt out. Fork users: your `origin` points to your fork — add `upstream` to track the original.
+
+### Uninstall
+
+Remove `~/.claude` and restart Claude Code. It recreates a default config. Your projects are unaffected.
 
 ---
 
