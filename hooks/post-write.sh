@@ -140,14 +140,25 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
             # @status accepted
             # @rationale Guardian writes .active-guardian-* markers with format
             #   "pre-dispatch|<timestamp>" so expired markers (stale session crashes)
-            #   don't permanently exempt proof invalidation. TTL is 600s (10 min).
+            #   don't permanently exempt proof invalidation. TTL is GUARDIAN_ACTIVE_TTL (600s).
             #   Matches the marker format written by task-track.sh (line 88).
-            _GUARDIAN_TTL=600
+            #
+            # @decision DEC-V3-FIX2-001
+            # @title Marker format fallback: use file mtime when no pipe delimiter
+            # @status accepted
+            # @rationale init_trace() may write a plain trace_id (no pipe|timestamp) to
+            #   the guardian marker before task-track.sh writes the canonical format.
+            #   When cut -d'|' -f2 produces non-numeric output, fall back to file mtime.
+            #   A recently-created file (within GUARDIAN_ACTIVE_TTL) is still active.
+            _pw_now=$(date +%s)
             for _gm in "${TRACE_STORE:-$HOME/.claude/traces}/.active-guardian-"*; do
                 if [[ -f "$_gm" ]]; then
-                    _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "0")
-                    _now=$(date +%s)
-                    if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt $_GUARDIAN_TTL ]]; then
+                    _marker_ts=$(cut -d'|' -f2 "$_gm" 2>/dev/null || echo "")
+                    # Fallback: no pipe delimiter → use file mtime
+                    if [[ ! "$_marker_ts" =~ ^[0-9]+$ ]]; then
+                        _marker_ts=$(_file_mtime "$_gm")
+                    fi
+                    if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _pw_now - _marker_ts )) -lt ${GUARDIAN_ACTIVE_TTL:-600} ]]; then
                         _guardian_active=true; break
                     fi
                 fi
@@ -156,13 +167,15 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
             # Check auto-verify markers (same TTL — protects verified→guardian gap)
             # @decision DEC-PROOF-RACE-001: Auto-verify markers created by post-task.sh and
             # check-tester.sh protect the window between "verified" write and Guardian dispatch.
-            # Same 10-minute TTL as guardian markers prevents permanent blocking from crashes.
+            # Same TTL as guardian markers prevents permanent blocking from crashes.
             if [[ "$_guardian_active" == "false" ]]; then
                 for _avm in "${TRACE_STORE:-$HOME/.claude/traces}/.active-autoverify-"*; do
                     if [[ -f "$_avm" ]]; then
-                        _marker_ts=$(cut -d'|' -f2 "$_avm" 2>/dev/null || echo "0")
-                        _now=$(date +%s)
-                        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _now - _marker_ts )) -lt $_GUARDIAN_TTL ]]; then
+                        _marker_ts=$(cut -d'|' -f2 "$_avm" 2>/dev/null || echo "")
+                        if [[ ! "$_marker_ts" =~ ^[0-9]+$ ]]; then
+                            _marker_ts=$(_file_mtime "$_avm")
+                        fi
+                        if [[ "$_marker_ts" =~ ^[0-9]+$ && $(( _pw_now - _marker_ts )) -lt ${GUARDIAN_ACTIVE_TTL:-600} ]]; then
                             _guardian_active=true; break
                         fi
                     fi
@@ -179,10 +192,37 @@ if [[ -e "$(dirname "$FILE_PATH")" ]]; then
                 RELATIVE_PATH="${FILE_PATH#"${PROJECT_ROOT}"/}"
                 if [[ "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] \
                    && [[ ! "$RELATIVE_PATH" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]]; then
-                    # || true: write_proof_status returns 1 if the monotonic lattice
-                    # (DEC-PROOF-LATTICE-001) rejects verified→pending without an epoch reset.
-                    # Non-fatal: if the epoch reset isn't set up, proof stays verified.
-                    write_proof_status "pending" "$PROJECT_ROOT" || true
+                    # @decision DEC-V3-FIX7-001
+                    # @title Workflow-scoped proof invalidation in post-write.sh
+                    # @status accepted
+                    # @rationale Files written to a worktree (/.worktrees/NAME/...) should
+                    #   only invalidate that worktree's proof status, not the project-wide
+                    #   or other worktrees' proof status. resolve_proof_file_for_path()
+                    #   returns the workflow-specific path. If that file exists and is
+                    #   "verified", we write "pending" directly (bypassing write_proof_status
+                    #   lattice which is project-scoped). For "main" workflow, fall back to
+                    #   the standard write_proof_status() call for backward compatibility.
+                    _wf_proof_file=$(resolve_proof_file_for_path "$FILE_PATH")
+                    if [[ "$_wf_proof_file" == */worktrees/* ]]; then
+                        # Workflow-scoped invalidation: write directly to worktree proof file
+                        # Create parent directory if needed
+                        mkdir -p "$(dirname "$_wf_proof_file")" 2>/dev/null || true
+                        _wf_current=""
+                        if [[ -f "$_wf_proof_file" ]]; then
+                            _wf_current=$(cut -d'|' -f1 "$_wf_proof_file" 2>/dev/null || echo "")
+                        fi
+                        # Only downgrade: verified→pending (not committed→pending, etc.)
+                        if [[ "$_wf_current" == "verified" || "$_wf_current" == "needs-verification" || -z "$_wf_current" ]]; then
+                            printf 'pending|%s\n' "$(date +%s)" > "${_wf_proof_file}.tmp" && \
+                                mv "${_wf_proof_file}.tmp" "$_wf_proof_file" || true
+                        fi
+                    else
+                        # Main workflow: use standard write_proof_status (lattice-enforced)
+                        # || true: write_proof_status returns 1 if the monotonic lattice
+                        # (DEC-PROOF-LATTICE-001) rejects verified→pending without an epoch reset.
+                        # Non-fatal: if the epoch reset isn't set up, proof stays verified.
+                        write_proof_status "pending" "$PROJECT_ROOT" || true
+                    fi
                 fi
             fi
         fi
